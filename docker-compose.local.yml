@@ -1,0 +1,59 @@
+services:
+
+  # Local testing stack: always build from the current workspace.
+  engine:
+    image: mt5-fleet-engine:local
+    build:
+      context: ./engine
+      args:
+        INSTALL_REFERENCE_AT_BUILD: "0"
+    container_name: engine-local
+    restart: unless-stopped
+    environment:
+      FLEET_DIR: /mt5-fleet
+      WINEPREFIX: /mt5-fleet/wineprefix
+      DISPLAY: ":99"
+      WINEDEBUG: "-all"
+      WORKER_PORT_RANGE_START: "19812"
+      WORKER_PORT_RANGE_END: "19912"
+      VNC_WS_PORT_RANGE_START: "20000"
+      VNC_WS_PORT_RANGE_END: "20100"
+      INSTALLER_VNC_WS_PORT: "19999"
+    volumes:
+      - mt5-workers-local:/mt5-fleet/workers
+      - mt5-config-local:/mt5-fleet/config
+      - mt5-reference-local:/mt5-fleet/reference
+      - mt5-wineprefix-local:/mt5-fleet/wineprefix
+    ports:
+      - "19812-19912:19812-19912"
+      - "20000-20100:6800-6900"
+      - "19999:6799"
+    networks:
+      - mt5-internal-local
+    shm_size: "256mb"
+
+  api:
+    image: mt5-fleet-api:local
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: api-local
+    restart: unless-stopped
+    environment:
+      ENGINE_URL: "http://engine:18810"
+    ports:
+      - "8080:8080"
+    networks:
+      - mt5-internal-local
+    depends_on:
+      - engine
+
+volumes:
+  mt5-workers-local:
+  mt5-config-local:
+  mt5-reference-local:
+  mt5-wineprefix-local:
+
+networks:
+  mt5-internal-local:
+    driver: bridge

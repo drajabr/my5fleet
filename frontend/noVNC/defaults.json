@@ -1,0 +1,8 @@
+{
+  "autoconnect": true,
+  "resize": "scale",
+  "path": "",
+  "encrypt": false,
+  "reconnect": true,
+  "reconnect_delay": 3000
+}

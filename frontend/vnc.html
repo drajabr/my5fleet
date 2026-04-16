@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>VNC – redirecting…</title>
+  <script>
+    // Redirect to stock noVNC viewer, forwarding query params
+    const p = new URLSearchParams(location.search);
+    const host = p.get('host') || location.hostname;
+    const port = p.get('port') || '6800';
+    const qs = new URLSearchParams({
+      host, port, autoconnect: 'true', resize: 'scale',
+      reconnect: 'true', reconnect_delay: '3000'
+    });
+    location.replace('/noVNC/vnc.html?' + qs.toString());
+  </script>
+</head>
+<body></body>
+</html>

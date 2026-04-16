@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>mt5-fleet</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <div class="header-brand">
+    <h1>mt5<span>-fleet</span></h1>
+    <span id="engine-badge" class="engine-badge" title="Engine: checking…">●</span>
+  </div>
+  <button class="btn btn-primary" id="add-btn" onclick="openAddModal()">+ Add Worker</button>
+</header>
+
+<!-- ── Body: sidebar + VNC panel ── -->
+<div id="content">
+  <aside id="sidebar">
+    <ul id="worker-list"></ul>
+  </aside>
+  <div id="sidebar-resizer" class="resizer resizer-x" title="Drag to resize sidebar"></div>
+  <div id="vnc-panel">
+    <div id="vnc-view">
+      <div id="vnc-placeholder">
+        <span>Select a worker to view its display (logs panel is below)</span>
+      </div>
+      <div id="vnc-screen"></div>
+      <iframe id="vnc-iframe" style="display:none; border:none; width:100%; height:100%; position:absolute; inset:0; z-index:1"></iframe>
+    </div>
+    <div id="log-resizer" class="resizer resizer-y" title="Drag to resize logs"></div>
+    <div id="log-panel">
+      <div id="log-lines"><div class="log-line muted">Select a worker to stream logs.</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Add / Rename worker modal ── -->
+<div class="modal-backdrop" id="worker-modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <h2 id="modal-title">Add Worker</h2>
+
+    <div class="form-group">
+      <label for="f-name">Display Name <span style="color:var(--muted)">(optional)</span></label>
+      <input class="form-control" id="f-name" type="text" placeholder="My Broker" />
+    </div>
+
+    <div class="form-group" id="f-token-group">
+      <label>RPyC Token</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input class="form-control" id="f-token" type="text" readonly style="font-family:monospace;font-size:12px" />
+        <button class="btn btn-ghost" style="white-space:nowrap" onclick="copyText(document.getElementById('f-token').value)">Copy</button>
+        <button class="btn btn-warning btn-xs" id="f-token-rotate" style="white-space:nowrap;display:none" onclick="rotateTokenModal()">Rotate</button>
+      </div>
+      <span id="f-token-hint" style="font-size:11px;color:var(--muted)">Save this — it won't be shown again after you close this dialog.</span>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn btn-ghost" onclick="closeModal('worker-modal')">Cancel</button>
+      <button class="btn btn-primary" id="modal-save-btn" onclick="saveWorker()">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Toast ── -->
+<div id="toast"></div>
+
+<!-- ── Engine status overlay (shown while connecting / installing) ── -->
+<div id="status-overlay">
+  <div class="status-bar">
+    <div class="status-spinner"></div>
+    <h2 id="status-title">Connecting to engine…</h2>
+    <span id="status-msg" class="status-msg"></span>
+  </div>
+  <div class="status-body">
+    <div id="status-vnc-wrap" class="status-vnc-wrap hidden">
+      <div id="status-vnc-screen" class="status-vnc-screen"></div>
+    </div>
+    <pre id="status-log" class="status-log"></pre>
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let _workers = [];
+let _editingId = null;   // null = creating, string = editing
+let _selectedId = null;
+let _pollTimer = null;
+let _logTimer = null;
+let _engineLogActive = false; // true when log panel is showing engine-level logs
+let _sidebarWidth = 300;
+let _logHeight = 180;
+let _overlayLogLines = [];
+let _overlayVncPort = 0;
+let _workerVncPort = 0;
+let _workerRfb = null;
+let _overlayRfb = null;
+let _workerRetryTimer = null;
+let _overlayRetryTimer = null;
+let _rfbClassPromise = null;
+
+async function getRFBClass() {
+  if (!_rfbClassPromise) {
+    _rfbClassPromise = import('/static/novnc/rfb.js').then(m => m.default);
+  }
+  return _rfbClassPromise;
+}
+
+function _clearRetryTimers() {
+  if (_workerRetryTimer) { clearTimeout(_workerRetryTimer); _workerRetryTimer = null; }
+  if (_overlayRetryTimer) { clearTimeout(_overlayRetryTimer); _overlayRetryTimer = null; }
+}
+
+function disconnectWorkerVNC() {
+  if (_workerRetryTimer) { clearTimeout(_workerRetryTimer); _workerRetryTimer = null; }
+  if (_workerRfb) {
+    try { _workerRfb.disconnect(); } catch (_) {}
+    _workerRfb = null;
+  }
+  const iframe = document.getElementById('vnc-iframe');
+  if (iframe) { iframe.style.display = 'none'; iframe.src = ''; }
+}
+
+function disconnectOverlayVNC() {
+  if (_overlayRetryTimer) { clearTimeout(_overlayRetryTimer); _overlayRetryTimer = null; }
+  if (_overlayRfb) {
+    try { _overlayRfb.disconnect(); } catch (_) {}
+    _overlayRfb = null;
+  }
+}
+
+// Size a VNC canvas to fit its wrapper at 4:3 (1024×768 Xvfb).
+// For flex-growing wrappers: read actual wrapper size and fit canvas inside.
+// For fixed wrappers (overlay): compute from parent, set both wrapper + canvas.
+const FB_ASPECT = 4 / 3;
+function _fitVnc(wrapEl, screenEl) {
+  if (!wrapEl || !screenEl) return;
+  if (wrapEl.offsetParent === null) return;
+  const parent = wrapEl.parentElement;
+  if (!parent) return;
+  const cs = getComputedStyle(wrapEl);
+  const flexGrow = parseFloat(cs.flexGrow) || 0;
+
+  if (flexGrow > 0) {
+    // Wrapper fills remaining space via flex — just size the canvas inside it
+    const aw = wrapEl.clientWidth;
+    const ah = wrapEl.clientHeight;
+    if (aw <= 0 || ah <= 0) return;
+    let w, h;
+    if (aw / ah > FB_ASPECT) {
+      h = ah; w = Math.round(h * FB_ASPECT);
+    } else {
+      w = aw; h = Math.round(w / FB_ASPECT);
+    }
+    screenEl.style.width = w + 'px';
+    screenEl.style.height = h + 'px';
+  } else {
+    // Fixed wrapper (overlay VNC) — compute from parent
+    const dir = getComputedStyle(parent).flexDirection;
+    const pw = parent.clientWidth;
+    const ph = parent.clientHeight;
+    if (pw <= 0 || ph <= 0) return;
+    let w, h;
+    if (dir === 'row') {
+      h = ph; w = Math.round(h * FB_ASPECT);
+      if (w > pw * 0.85) { w = Math.round(pw * 0.85); h = Math.round(w / FB_ASPECT); }
+    } else {
+      w = pw; h = Math.round(w / FB_ASPECT);
+      const maxH = ph - 66;
+      if (maxH > 0 && h > maxH) { h = maxH; w = Math.round(h * FB_ASPECT); }
+    }
+    screenEl.style.width = w + 'px';
+    screenEl.style.height = h + 'px';
+    wrapEl.style.width = w + 'px';
+    wrapEl.style.height = h + 'px';
+  }
+}
+function _fitAllVnc() {
+  _fitVnc(document.getElementById('status-vnc-wrap'), document.getElementById('status-vnc-screen'));
+  _fitVnc(document.getElementById('vnc-view'), document.getElementById('vnc-screen'));
+}
+
+async function connectWorkerVNC(port) {
+  const p = Number(port || 0);
+  const target = document.getElementById('vnc-screen');
+  if (!target || p <= 0) return;
+
+  disconnectWorkerVNC();
+  _workerVncPort = p;
+  target.innerHTML = '';
+
+  const RFB = await getRFBClass();
+  if (_workerVncPort !== p) return;
+
+  // Use the stock noVNC viewer in an iframe
+  const iframe = document.getElementById('vnc-iframe');
+  if (iframe) {
+    iframe.src = `/noVNC/vnc.html?host=${location.hostname}&port=${p}&path=&autoconnect=true&resize=scale&reconnect=true&reconnect_delay=3000`;
+    iframe.style.display = '';
+  }
+  _workerRfb = { disconnect() { if (iframe) { iframe.src = ''; } } };
+}
+
+async function connectOverlayVNC(port) {
+  const p = Number(port || 0);
+  const target = document.getElementById('status-vnc-screen');
+  if (!target || p <= 0) return;
+
+  disconnectOverlayVNC();
+  _overlayVncPort = p;
+  target.innerHTML = '';
+
+  const RFB = await getRFBClass();
+  if (_overlayVncPort !== p) return;
+
+  const rfb = new RFB(target, `ws://${location.hostname}:${p}/`);
+  rfb.scaleViewport = true;
+  rfb.resizeSession = true;
+  requestAnimationFrame(_fitAllVnc);
+  rfb.addEventListener('disconnect', () => {
+    if (_overlayVncPort !== p) return;
+    _overlayRetryTimer = setTimeout(() => { connectOverlayVNC(p); }, 3000);
+  });
+  _overlayRfb = rfb;
+}
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch('/api/' + path, opts);
+  if (!res.ok && res.status !== 204) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || res.statusText);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+// ── Poll loop ─────────────────────────────────────────────────────────────────
+async function fetchWorkers() {
+  try {
+    _workers = await api('GET', 'workers');
+    const hasSelected = !!_selectedId && _workers.some(w => w.id === _selectedId);
+    if (!hasSelected && _workers.length) {
+      selectWorker(_workers[0].id);
+      return;
+    }
+    if (!hasSelected && !_workers.length) {
+      _selectedId = null;
+      startEngineLogs();
+    }
+    renderList();
+  } catch (e) {
+    console.error('Fetch workers failed:', e);
+  }
+}
+
+function startPolling() {
+  fetchWorkers();
+  _pollTimer = setInterval(fetchWorkers, 5000);
+}
+
+// ── Rendering ─────────────────────────────────────────────────────────────────
+const STATUS_COLOR = {
+  running:  'var(--green)',
+  starting: 'var(--yellow)',
+  stopping: 'var(--yellow)',
+  stopped:  'var(--grey)',
+  error:    'var(--red)',
+};
+
+function renderList() {
+  const list = document.getElementById('worker-list');
+  if (!_workers.length) {
+    list.innerHTML = `<li class="list-empty">No workers yet.</li>`;
+    return;
+  }
+  list.innerHTML = _workers.map(renderRow).join('');
+}
+
+function renderRow(w) {
+  const color   = STATUS_COLOR[w.status] || 'var(--grey)';
+  const isRunning = w.status === 'running' || w.status === 'starting';
+  const isBusy    = w.status === 'starting' || w.status === 'stopping';
+  const isSelected = w.id === _selectedId;
+  const account = w.config ? `${w.config.login} @ ${w.config.server}` : '';
+
+  return `
+  <li class="worker-row${isSelected ? ' selected' : ''}" id="row-${w.id}"
+      onclick="selectWorker('${w.id}')">
+    <span class="status-dot" style="background:${color}"></span>
+    <div class="row-info">
+      <span class="row-name">${esc(w.name)}</span>
+      ${account ? `<span class="row-sub">${esc(account)}</span>` : ''}
+    </div>
+    <span class="row-port">:${w.port}</span>
+    <div class="row-actions" onclick="event.stopPropagation()">
+      <button class="btn btn-primary btn-xs" title="Restart" onclick="restartWorker('${w.id}')" ${isBusy ? 'disabled' : ''}>&#x27F3;</button>
+      <button class="btn btn-ghost btn-xs" title="Configure" onclick="openEditModal('${w.id}')">&#x2699;</button>
+      <button class="btn btn-danger btn-xs" title="Delete" onclick="deleteWorker('${w.id}')">&#x1F5D1;</button>
+    </div>
+  </li>`;
+}
+
+// ── Worker selection + VNC ────────────────────────────────────────────────────
+function selectWorker(id) {
+  _selectedId = id;
+  renderList();
+  const w = _workers.find(x => x.id === id);
+  const screen = document.getElementById('vnc-screen');
+  const placeholder = document.getElementById('vnc-placeholder');
+  if (!w) {
+    disconnectWorkerVNC();
+    _workerVncPort = 0;
+    if (screen) screen.innerHTML = '';
+    placeholder.style.display = 'flex';
+    stopLogPolling();
+    return;
+  }
+  startLogPolling(id);
+  if (!w.vnc_ws_port) {
+    disconnectWorkerVNC();
+    _workerVncPort = 0;
+    if (screen) screen.innerHTML = '';
+    placeholder.style.display = 'flex';
+    return;
+  }
+  _workerVncPort = Number(w.vnc_ws_port);
+  placeholder.style.display = 'none';
+  connectWorkerVNC(_workerVncPort);
+}
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ── Log polling ───────────────────────────────────────────────────────────────
+async function fetchLogs(id) {
+  try {
+    const lines = await api('GET', `workers/${id}/logs`);
+    const panel  = document.getElementById('log-panel');
+    const box    = document.getElementById('log-lines');
+    if (!Array.isArray(lines) || lines.length === 0) {
+      box.innerHTML = '<div class="log-line muted">No logs yet for this worker.</div>';
+    } else {
+      box.innerHTML = lines.map(l => `<div class="log-line">${esc(l)}</div>`).join('');
+      panel.scrollTop = panel.scrollHeight;
+    }
+  } catch (e) {
+    const box = document.getElementById('log-lines');
+    box.innerHTML = `<div class="log-line muted">Failed to fetch logs: ${esc(e.message || String(e))}</div>`;
+    console.warn('fetchLogs failed:', e);
+  }
+}
+
+function startLogPolling(id) {
+  stopLogPolling();
+  fetchLogs(id);
+  _logTimer = setInterval(() => fetchLogs(id), 3000);
+}
+
+function stopLogPolling() {
+  if (_logTimer) { clearInterval(_logTimer); _logTimer = null; }
+  _engineLogActive = false;
+}
+
+// ── Splitter resizing ────────────────────────────────────────────────────────
+function initSplitters() {
+  const content = document.getElementById('content');
+  const sidebar = document.getElementById('sidebar');
+  const sidebarResizer = document.getElementById('sidebar-resizer');
+  const vncPanel = document.getElementById('vnc-panel');
+  const logPanel = document.getElementById('log-panel');
+  const logResizer = document.getElementById('log-resizer');
+
+  sidebar.style.width = `${_sidebarWidth}px`;
+  // log panel is flex: 1 — no fixed height needed initially
+
+  sidebarResizer.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    sidebarResizer.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing-x');
+    const onMove = ev => {
+      const rect = content.getBoundingClientRect();
+      const min = 220;
+      const max = Math.max(360, rect.width - 360);
+      _sidebarWidth = Math.min(max, Math.max(min, ev.clientX - rect.left));
+      sidebar.style.width = `${_sidebarWidth}px`;
+      _fitAllVnc();
+    };
+    const onUp = () => {
+      document.body.classList.remove('resizing-x');
+      sidebarResizer.removeEventListener('pointermove', onMove);
+      sidebarResizer.removeEventListener('pointerup', onUp);
+      sidebarResizer.removeEventListener('pointercancel', onUp);
+    };
+    sidebarResizer.addEventListener('pointermove', onMove);
+    sidebarResizer.addEventListener('pointerup', onUp);
+    sidebarResizer.addEventListener('pointercancel', onUp);
+  });
+
+  logResizer.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    logResizer.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing-y');
+    const onMove = ev => {
+      const rect = vncPanel.getBoundingClientRect();
+      const min = 90;
+      const max = Math.max(140, rect.height - 180);
+      _logHeight = Math.min(max, Math.max(min, rect.bottom - ev.clientY));
+      logPanel.style.height = `${_logHeight}px`;
+      _fitAllVnc();
+    };
+    const onUp = () => {
+      document.body.classList.remove('resizing-y');
+      logResizer.removeEventListener('pointermove', onMove);
+      logResizer.removeEventListener('pointerup', onUp);
+      logResizer.removeEventListener('pointercancel', onUp);
+    };
+    logResizer.addEventListener('pointermove', onMove);
+    logResizer.addEventListener('pointerup', onUp);
+    logResizer.addEventListener('pointercancel', onUp);
+  });
+}
+
+// ── Worker actions ─────────────────────────────────────────────────────────────
+async function restartWorker(id) {
+  const btn = document.querySelector(`#row-${id} [title="Restart"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+  try {
+    await api('POST', `workers/${id}/restart`);
+    toast('Worker restarting…');
+    fetchWorkers();
+  } catch (e) { toast(e.message, true); }
+  finally { if (btn) { btn.disabled = false; btn.innerHTML = '&#x27F3;'; } }
+}
+
+async function deleteWorker(id) {
+  const w = _workers.find(x => x.id === id);
+  if (!confirm(`Delete worker "${w?.name || id}"? This removes its directory.`)) return;
+  try {
+    await api('DELETE', `workers/${id}`);
+    toast('Worker deleted.');
+    fetchWorkers();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function rotateToken(id) {
+  if (!confirm('Generate a new token? The old one will stop working immediately.')) return;
+  try {
+    await api('POST', `workers/${id}/rotate-token`);
+    toast('Token rotated.');
+    fetchWorkers();
+  } catch (e) { toast(e.message, true); }
+}
+
+// ── Token generation (client-side, cryptographically random) ─────────────────
+function generateToken() {
+  const arr = new Uint8Array(32);
+  crypto.getRandomValues(arr);
+  return btoa(String.fromCharCode(...arr))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+// ── Add / Rename modal ────────────────────────────────────────────────────────
+function openAddModal() {
+  _editingId = null;
+  document.getElementById('modal-title').textContent = 'Add Worker';
+  document.getElementById('modal-save-btn').textContent = 'Add';
+  document.getElementById('f-name').value = '';
+  document.getElementById('f-token').value = generateToken();
+  document.getElementById('f-token-group').style.display = '';
+  document.getElementById('f-token-hint').style.display = '';
+  document.getElementById('f-token-rotate').style.display = 'none';
+  openModal('worker-modal');
+}
+
+function openEditModal(id) {
+  const w = _workers.find(x => x.id === id);
+  if (!w) return;
+  _editingId = id;
+  document.getElementById('modal-title').textContent = `Settings: ${w.name}`;
+  document.getElementById('modal-save-btn').textContent = 'Save';
+  document.getElementById('f-name').value = w.name || '';
+  document.getElementById('f-token').value = w.token || '';
+  document.getElementById('f-token-group').style.display = '';
+  document.getElementById('f-token-hint').style.display = 'none';
+  document.getElementById('f-token-rotate').style.display = '';
+  openModal('worker-modal');
+}
+
+async function saveWorker() {
+  const name  = document.getElementById('f-name').value.trim();
+  const token = document.getElementById('f-token').value.trim();
+  const btn   = document.getElementById('modal-save-btn');
+  const origText = btn.textContent;
+
+  btn.disabled = true;
+  btn.textContent = _editingId ? 'Saving…' : 'Creating…';
+
+  try {
+    if (_editingId) {
+      await api('PATCH', `workers/${_editingId}/name`, { name });
+      toast('Worker renamed.');
+    } else {
+      const payload = { token };
+      if (name) payload.name = name;
+      await api('POST', 'workers', payload);
+      toast('Worker created.');
+    }
+    closeModal('worker-modal');
+    fetchWorkers();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+}
+
+async function rotateTokenModal() {
+  if (_editingId) {
+    if (!confirm('Generate a new token? The old one will stop working immediately.')) return;
+    try {
+      const worker = await api('POST', `workers/${_editingId}/rotate-token`);
+      document.getElementById('f-token').value = worker.token;
+      toast('Token rotated — copy the new token!');
+    } catch (e) { toast(e.message, true); }
+  } else {
+    // New worker — just regenerate in the field
+    document.getElementById('f-token').value = generateToken();
+    document.getElementById('f-token-hint').style.display = '';
+  }
+}
+
+// ── Modal helpers ─────────────────────────────────────────────────────────────
+function openModal(id)  { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+// Close on backdrop click
+document.querySelectorAll('.modal-backdrop').forEach(bd => {
+  bd.addEventListener('click', e => {
+    if (e.target === bd) bd.classList.remove('open');
+  });
+});
+
+// Close on Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-backdrop.open')
+      .forEach(bd => bd.classList.remove('open'));
+  }
+});
+
+// ── Clipboard ─────────────────────────────────────────────────────────────────
+function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast('Copied!'));
+  } else {
+    const el = document.createElement('textarea');
+    el.value = text;
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+    toast('Copied!');
+  }
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────────
+let _toastTimer = null;
+function toast(msg, isError = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.borderColor = isError ? 'var(--red)' : 'var(--accent)';
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+// ── Engine log streaming ──────────────────────────────────────────────────────
+async function fetchEngineLogs() {
+  try {
+    const lines = await api('GET', 'logs');
+    const box   = document.getElementById('log-lines');
+    const panel = document.getElementById('log-panel');
+    if (!Array.isArray(lines) || lines.length === 0) {
+      box.innerHTML = '<div class="log-line muted">[engine] No log entries yet.</div>';
+    } else {
+      box.innerHTML = lines.map(l => `<div class="log-line">${esc(l)}</div>`).join('');
+      panel.scrollTop = panel.scrollHeight;
+    }
+  } catch (e) {
+    document.getElementById('log-lines').innerHTML =
+      `<div class="log-line muted">[engine] Log unavailable: ${esc(e.message)}</div>`;
+  }
+}
+
+function startEngineLogs() {
+  if (_engineLogActive) return; // already running – don't restart the interval
+  stopLogPolling();             // clear any existing worker-log timer
+  _engineLogActive = true;
+  fetchEngineLogs();
+  _logTimer = setInterval(fetchEngineLogs, 5000);
+}
+
+// ── Status overlay helpers ────────────────────────────────────────────────────
+function showOverlay(title, msg) {
+  document.getElementById('status-title').textContent = title;
+  document.getElementById('status-msg').textContent   = msg;
+  document.getElementById('status-overlay').classList.remove('hidden');
+}
+
+function hideOverlay() {
+  document.getElementById('status-overlay').classList.add('hidden');
+}
+
+function setOverlayVNC(port) {
+  const wrap = document.getElementById('status-vnc-wrap');
+  const screen = document.getElementById('status-vnc-screen');
+  const p = Number(port || 0);
+  if (!wrap || !screen) return;
+  if (p <= 0) {
+    wrap.classList.add('hidden');
+    disconnectOverlayVNC();
+    screen.innerHTML = '';
+    _overlayVncPort = 0;
+    return;
+  }
+  if (_overlayVncPort !== p) {
+    _overlayVncPort = p;
+    connectOverlayVNC(p);
+  }
+  wrap.classList.remove('hidden');
+  requestAnimationFrame(_fitAllVnc);
+}
+
+function setEngineBadge(state) {
+  const el = document.getElementById('engine-badge');
+  if (!el) return;
+  const COLOR = { ready: 'var(--green)', installing: 'var(--yellow)', error: 'var(--red)' };
+  el.style.color = COLOR[state] || 'var(--grey)';
+  el.title = 'Engine: ' + state;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function _pollInstallLog() {
+  try {
+    const lines = await api('GET', 'logs');
+    if (Array.isArray(lines) && lines.length) {
+      setOverlayLog(lines.slice(-30));
+    }
+  } catch (e) {
+    appendOverlayLog(`[ui] ${e.message || String(e)}`);
+  }
+}
+
+function setOverlayLog(lines) {
+  _overlayLogLines = Array.isArray(lines) ? lines.slice(-30) : [];
+  const el = document.getElementById('status-log');
+  if (!el) return;
+  el.textContent = _overlayLogLines.join('\n');
+  el.scrollTop = el.scrollHeight;
+}
+
+function appendOverlayLog(line) {
+  if (!line) return;
+  const last = _overlayLogLines[_overlayLogLines.length - 1];
+  if (last === line) return;
+  _overlayLogLines.push(line);
+  if (_overlayLogLines.length > 30) {
+    _overlayLogLines = _overlayLogLines.slice(-30);
+  }
+  setOverlayLog(_overlayLogLines);
+}
+
+async function waitForEngine() {
+  for (;;) {
+    try {
+      const s = await api('GET', 'status');
+      const state = s.status === 'ready' ? 'ready' : 'installing';
+      setEngineBadge(state);
+      if (state === 'ready') return;
+      showOverlay(
+        'Installing MT5\u2026',
+        'First-build installs MT5 and Windows Python \u2014 this takes 10\u201315\u00a0minutes.'
+      );
+      setOverlayVNC(s.installer_vnc_ws_port || 0);
+      await _pollInstallLog();
+    } catch (e) {
+      setEngineBadge('error');
+      showOverlay('Connecting to engine\u2026', 'Retrying\u2026');
+      setOverlayVNC(0);
+      appendOverlayLog(`[ui] ${e.message || String(e)}`);
+      await _pollInstallLog();
+    }
+    await sleep(5000);
+  }
+}
+
+async function boot() {
+  showOverlay('Connecting to engine\u2026', '');
+  setOverlayLog(['[ui] Waiting for engine status...']);
+  await waitForEngine();
+  hideOverlay();
+  setOverlayVNC(0);
+  setEngineBadge('ready');
+  startPolling();
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+initSplitters();
+window.addEventListener('resize', _fitAllVnc);
+boot();
+</script>
+</body>
+</html>

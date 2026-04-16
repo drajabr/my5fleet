@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Docker
+*.env
+
+# MT5 fleet runtime data (persisted in Docker volume, not repo)
+mt5-data/
+
+# Editor
+.vscode/
+*.swp
+*~

@@ -1,0 +1,7 @@
+{
+  "autoconnect": true,
+  "reconnect": true,
+  "reconnect_delay": 3000,
+  "resize": "scale",
+  "path": ""
+}
