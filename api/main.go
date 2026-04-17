@@ -10,7 +10,7 @@
 package main
 
 import (
-	"io"
+	"encoding/json"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -23,7 +23,7 @@ import (
 func main() {
 	engineURL := strings.TrimRight(envOr("ENGINE_URL", "http://engine:18810"), "/")
 	frontendDir := envOr("FRONTEND_DIR", "./frontend")
-	port := envOr("PORT", "8080")
+	port := envOr("PORT", "17380")
 
 	upstream, err := url.Parse(engineURL)
 	if err != nil {
@@ -74,7 +74,7 @@ func buildProxy(upstream *url.URL) *httputil.ReverseProxy {
 		log.Printf("proxy error for %s %s: %v", r.Method, r.URL.Path, err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
-		io.WriteString(w, `{"detail":"engine unreachable: `+strings.ReplaceAll(err.Error(), `"`, `'`)+`"}`) //nolint:errcheck
+		_ = json.NewEncoder(w).Encode(map[string]string{"detail": "engine unreachable: " + err.Error()})
 	}
 
 	return rp

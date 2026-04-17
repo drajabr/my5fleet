@@ -1,0 +1,11 @@
+#!/bin/sh
+# bspwm config for the MT5 installer display (:99).
+# All windows float to accommodate dialog-style installer windows.
+
+bspc monitor -d I
+
+bspc config border_width         0
+bspc config window_gap           0
+
+# Float all windows — installer dialogs are not suited for tiling.
+bspc rule -a "*" state=floating

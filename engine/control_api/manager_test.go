@@ -103,8 +103,7 @@ func TestStopWorkerZerosAllVNCPIDs(t *testing.T) {
 			Token:       "tok",
 			PIDTerminal: 99999,
 			PIDRPyC:     99998,
-			PIDXvfb:     99997,
-			PIDx11vnc:   99996,
+			PIDXvnc:     99994,
 			PIDWsockify: 99995,
 			VNCWSPort:   19000,
 		},
@@ -135,8 +134,7 @@ func TestStopWorkerZerosAllVNCPIDs(t *testing.T) {
 	for field, val := range map[string]int{
 		"PIDTerminal": w.PIDTerminal,
 		"PIDRPyC":     w.PIDRPyC,
-		"PIDXvfb":     w.PIDXvfb,
-		"PIDx11vnc":   w.PIDx11vnc,
+		"PIDXvnc":     w.PIDXvnc,
 		"PIDWsockify": w.PIDWsockify,
 	} {
 		if val != 0 {
@@ -145,5 +143,37 @@ func TestStopWorkerZerosAllVNCPIDs(t *testing.T) {
 	}
 	if w.Status != StatusStopped {
 		t.Errorf("expected status %q, got %q", StatusStopped, w.Status)
+	}
+	if keepAliveEnabled(w) {
+		t.Errorf("expected keepalive disabled after StopWorker")
+	}
+}
+
+func TestShouldSupervisorStart(t *testing.T) {
+	truePtr := boolPtr(true)
+	falsePtr := boolPtr(false)
+
+	tests := []struct {
+		name string
+		w    *Worker
+		want bool
+	}{
+		{name: "nil worker", w: nil, want: false},
+		{name: "running keepalive", w: &Worker{Status: StatusRunning, KeepAlive: truePtr}, want: false},
+		{name: "starting keepalive", w: &Worker{Status: StatusStarting, KeepAlive: truePtr}, want: false},
+		{name: "stopping keepalive", w: &Worker{Status: StatusStopping, KeepAlive: truePtr}, want: false},
+		{name: "stopped keepalive", w: &Worker{Status: StatusStopped, KeepAlive: truePtr}, want: true},
+		{name: "error keepalive", w: &Worker{Status: StatusError, KeepAlive: truePtr}, want: true},
+		{name: "unknown keepalive", w: &Worker{Status: WorkerStatus(""), KeepAlive: truePtr}, want: true},
+		{name: "stopped keepalive false", w: &Worker{Status: StatusStopped, KeepAlive: falsePtr}, want: false},
+		{name: "stopped keepalive missing defaults true", w: &Worker{Status: StatusStopped, KeepAlive: nil}, want: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldSupervisorStart(tc.w); got != tc.want {
+				t.Fatalf("shouldSupervisorStart() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

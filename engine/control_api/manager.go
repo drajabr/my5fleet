@@ -40,12 +40,15 @@ type Worker struct {
 	ID          string       `json:"id"`
 	Name        string       `json:"name"`
 	Status      WorkerStatus `json:"status"`
+	KeepAlive   *bool        `json:"keep_alive,omitempty"`
 	Port        int          `json:"port"`
 	Token       string       `json:"token"`
 	Config      *MT5Config   `json:"config,omitempty"`
 	PIDTerminal int          `json:"pid_terminal,omitempty"`
 	PIDRPyC     int          `json:"pid_rpyc,omitempty"`
+	PIDWM       int          `json:"pid_wm,omitempty"`
 	VNCWSPort   int          `json:"vnc_ws_port,omitempty"`
+	PIDXvnc     int          `json:"pid_xvnc,omitempty"`
 	PIDXvfb     int          `json:"pid_xvfb,omitempty"`
 	PIDx11vnc   int          `json:"pid_x11vnc,omitempty"`
 	PIDWsockify int          `json:"pid_wsockify,omitempty"`
@@ -68,12 +71,14 @@ var (
 	basePort       = 18812
 	vncWSHostBase  = 19000 // host-published websockify port base
 	vncWSLocalBase = 6800  // container-local websockify port base
-	vncRFBBase     = 5900  // container-local x11vnc RFB port base
-	vncDisplayBase = 100   // Xvfb display number base
+	vncRFBBase     = 5900  // container-local Xvnc RFB port base
+	vncDisplayBase = 100   // Xvnc display number base
 
 	writableDirs = []string{"MQL5", "logs", "config", "tester", "bases", "profiles"}
 
-	mu sync.Mutex // guards all workers.json reads/writes
+	mu            sync.Mutex // guards all workers.json reads/writes
+	cachedWorkers map[string]*Worker
+	cachedPath    string
 )
 
 const workerSupervisorInterval = 10 * time.Second
@@ -93,9 +98,15 @@ func initPaths() {
 // ── Persistence ────────────────────────────────────────────────────────────────
 
 func load() (map[string]*Worker, error) {
+	if cachedWorkers != nil && cachedPath == workersJSON {
+		return cachedWorkers, nil
+	}
 	data, err := os.ReadFile(workersJSON)
 	if os.IsNotExist(err) {
-		return make(map[string]*Worker), nil
+		w := make(map[string]*Worker)
+		cachedWorkers = w
+		cachedPath = workersJSON
+		return w, nil
 	}
 	if err != nil {
 		return nil, err
@@ -104,6 +115,8 @@ func load() (map[string]*Worker, error) {
 	if err := json.Unmarshal(data, &workers); err != nil {
 		return nil, err
 	}
+	cachedWorkers = workers
+	cachedPath = workersJSON
 	return workers, nil
 }
 
@@ -119,7 +132,12 @@ func save(workers map[string]*Worker) error {
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, workersJSON) // atomic on Linux
+	if err := os.Rename(tmp, workersJSON); err != nil {
+		return err
+	}
+	cachedWorkers = workers
+	cachedPath = workersJSON
+	return nil
 }
 
 // ── Allocation helpers ─────────────────────────────────────────────────────────
@@ -199,6 +217,8 @@ func cleanStaleState() {
 		if deriveStatus(w) == StatusStopped && (w.PIDTerminal != 0 || w.PIDRPyC != 0) {
 			w.PIDTerminal = 0
 			w.PIDRPyC = 0
+			w.PIDWM = 0
+			w.PIDXvnc = 0
 			w.PIDXvfb = 0
 			w.PIDx11vnc = 0
 			w.PIDWsockify = 0
@@ -210,14 +230,6 @@ func cleanStaleState() {
 	if changed {
 		_ = save(workers)
 	}
-}
-
-func wineEnv() []string {
-	return append(os.Environ(),
-		"WINEPREFIX="+winePrefix,
-		"DISPLAY="+display,
-		"WINEDEBUG=-all",
-	)
 }
 
 // killPID sends SIGTERM, waits up to 8 s, then sends SIGKILL.
@@ -242,7 +254,10 @@ func killPID(pid int, label string) {
 func createFS(workerID string) error {
 	workerDir := filepath.Join(workersDir, workerID)
 	if _, err := os.Stat(workerDir); err == nil {
-		return fmt.Errorf("worker directory already exists: %s", workerDir)
+		log.Printf("[createFS] Removing stale worker directory: %s", workerDir)
+		if err := os.RemoveAll(workerDir); err != nil {
+			return fmt.Errorf("failed to remove stale worker directory %s: %w", workerDir, err)
+		}
 	}
 	if _, err := os.Stat(referenceDir); err != nil {
 		return fmt.Errorf("reference install not found at %s — has first-boot finished?", referenceDir)
@@ -304,6 +319,19 @@ func newToken() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+func boolPtr(v bool) *bool {
+	b := v
+	return &b
+}
+
+func keepAliveEnabled(w *Worker) bool {
+	if w == nil || w.KeepAlive == nil {
+		// Backward-compatible default for old workers without this field.
+		return true
+	}
+	return *w.KeepAlive
+}
+
 // ── Public manager operations ──────────────────────────────────────────────────
 
 func ListWorkers() ([]*Worker, error) {
@@ -318,6 +346,11 @@ func ListWorkers() ([]*Worker, error) {
 	changed := false
 	list := make([]*Worker, 0, len(workers))
 	for _, w := range workers {
+		if w.KeepAlive == nil {
+			w.KeepAlive = boolPtr(true)
+			changed = true
+		}
+
 		live := deriveStatus(w)
 		// Sync transient statuses once the processes settle
 		if w.Status != live &&
@@ -383,6 +416,7 @@ func CreateWorker(name string, token string, config *MT5Config) (*Worker, error)
 		ID:        id,
 		Name:      name,
 		Status:    StatusStopped,
+		KeepAlive: boolPtr(true),
 		Port:      port,
 		Token:     token,
 		Config:    config,
@@ -414,33 +448,42 @@ func DeleteWorker(id string) error {
 		stopProcs(w)
 	}
 
+	name := w.Name
 	if err := removeFS(id); err != nil {
 		return err
 	}
 	delete(workers, id)
-	return save(workers)
+	if err := save(workers); err != nil {
+		return err
+	}
+	log.Printf("[delete] Worker %s (%s) deleted", id, name)
+	return nil
 }
 
 func StartWorker(id string) (*Worker, error) {
+	// ── Phase 1: read state + mark "starting" under lock ───────────────────────
 	mu.Lock()
-	defer mu.Unlock()
-
 	workers, err := load()
 	if err != nil {
+		mu.Unlock()
 		return nil, err
 	}
 	w, ok := workers[id]
 	if !ok {
+		mu.Unlock()
 		return nil, nil
 	}
 
 	current := deriveStatus(w)
 	if current == StatusRunning {
-		return w, nil
+		cp := *w
+		mu.Unlock()
+		return &cp, nil
 	}
-
-	if w.Status == StatusStopping {
-		return w, nil
+	if w.Status == StatusStopping || w.Status == StatusStarting {
+		cp := *w
+		mu.Unlock()
+		return &cp, nil
 	}
 
 	if current == StatusError {
@@ -448,71 +491,116 @@ func StartWorker(id string) (*Worker, error) {
 		stopProcs(w)
 	}
 
+	// Snapshot values needed for spawning
+	port := w.Port
+	token := w.Token
+
 	w.PIDTerminal = 0
 	w.PIDRPyC = 0
+	w.PIDWM = 0
+	w.PIDXvnc = 0
 	w.PIDXvfb = 0
 	w.PIDx11vnc = 0
 	w.PIDWsockify = 0
+	w.Status = StatusStarting
+	w.KeepAlive = boolPtr(true)
+	w.VNCWSPort = (port - basePort) + vncWSHostBase
+
+	if err := save(workers); err != nil {
+		mu.Unlock()
+		return nil, err
+	}
+	mu.Unlock()
+
+	// ── Phase 2: spawn all processes WITHOUT holding the lock ──────────────────
+	// On failure, set status to error so the supervisor can retry.
+	setError := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if ww, err := load(); err == nil {
+			if wk, ok := ww[id]; ok {
+				wk.Status = StatusError
+				_ = save(ww)
+			}
+		}
+	}
 
 	workerDir := filepath.Join(workersDir, id)
 	logsDir := filepath.Join(workerDir, "logs")
 	winMT5Path := fmt.Sprintf(`Z:\mt5-fleet\workers\%s\terminal64.exe`, id)
 
-	// ── Per-worker virtual display ─────────────────────────────────────────────
-	portOffset := w.Port - basePort
+	// ── Per-worker virtual display (Xvnc) ─────────────────────────────────────
+	portOffset := port - basePort
 	displayNum := vncDisplayBase + portOffset
 	workerDisplay := fmt.Sprintf(":%d", displayNum)
 	vncInternalPort := vncRFBBase + portOffset
 	wsContainerPort := vncWSLocalBase + portOffset
 
-	// Clean up any stale Xvfb lock/socket files left over from a previous
-	// SIGKILL. Xvfb refuses to start if these files exist, silently breaking
+	// Clean up any stale X lock/socket files left over from a previous
+	// SIGKILL. X servers refuse to start if these files exist, silently breaking
 	// the worker's display and causing MT5 IPC to fail.
 	_ = os.Remove(fmt.Sprintf("/tmp/.X%d-lock", displayNum))
 	_ = os.Remove(fmt.Sprintf("/tmp/.X11-unix/X%d", displayNum))
 
-	xvfbCmd := exec.Command("Xvfb",
+	xvncCmd := exec.Command("Xvnc",
 		workerDisplay,
-		"-screen", "0", "1280x800x24",
+		"-geometry", "1280x800",
+		"-depth", "24",
+		"-rfbport", fmt.Sprintf("%d", vncInternalPort),
+		"-SecurityTypes", "None",
+		"-AcceptSetDesktopSize",
+		"-AlwaysShared",
 		"-nolisten", "tcp", "-nolisten", "inet6",
 	)
-	xvfbCmd.Stdout = os.Stdout
-	xvfbCmd.Stderr = os.Stderr
-	if err := xvfbCmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start Xvfb for %s: %w", id, err)
+	xvncCmd.Stdout = os.Stdout
+	xvncCmd.Stderr = os.Stderr
+	if err := xvncCmd.Start(); err != nil {
+		setError()
+		return nil, fmt.Errorf("failed to start Xvnc for %s: %w", id, err)
 	}
-	log.Printf("[start] Xvfb PID %d for %s on display %s", xvfbCmd.Process.Pid, id, workerDisplay)
-	time.Sleep(time.Second) // give display a moment to initialise
+	log.Printf("[start] Xvnc PID %d for %s on display %s rfbport %d", xvncCmd.Process.Pid, id, workerDisplay, vncInternalPort)
+	if err := waitForXvncReady(displayNum, vncInternalPort, 10*time.Second); err != nil {
+		killPID(xvncCmd.Process.Pid, "xvnc")
+		setError()
+		return nil, fmt.Errorf("xvnc did not become ready for %s: %w", id, err)
+	}
+	_ = exec.Command("xsetroot", "-display", workerDisplay, "-cursor_name", "left_ptr").Run()
 
-	// ── Tiling window manager (ratpoison) ─────────────────────────────────────
-	wmCmd := exec.Command("ratpoison")
-	wmCmd.Env = append(os.Environ(), "DISPLAY="+workerDisplay)
+	// ── Tiling window manager (autotileWM) ─────────────────────────────────────
+	wmCmd := exec.Command("autotilewm")
+	wmCmd.Env = filteredEnv("DISPLAY="+workerDisplay, "XDG_RUNTIME_DIR=/tmp")
 	wmCmd.Stdout = os.Stdout
 	wmCmd.Stderr = os.Stderr
 	if err := wmCmd.Start(); err != nil {
-		log.Printf("[start] Warning: ratpoison failed for %s: %v", id, err)
+		log.Printf("[start] Warning: autotilewm failed for %s: %v", id, err)
 	} else {
-		log.Printf("[start] ratpoison PID %d for %s on display %s", wmCmd.Process.Pid, id, workerDisplay)
+		log.Printf("[start] autotilewm PID %d for %s on display %s", wmCmd.Process.Pid, id, workerDisplay)
 	}
 
 	// ── Per-worker wine environment ────────────────────────────────────────────
-	env := append(os.Environ(),
+	env := filteredEnv(
 		"WINEPREFIX="+winePrefix,
 		"DISPLAY="+workerDisplay,
 		"WINEDEBUG=-all",
 	)
 
 	// ── MT5 terminal ───────────────────────────────────────────────────────────
-	terminalExe := filepath.Join(workerDir, "terminal64.exe")
+	// MT5 runs directly on the X display, managed by autotileWM. Wine's
+	// Decorated=N registry key prevents internal title-bar reservations.
 	tOut, _ := os.OpenFile(filepath.Join(logsDir, "terminal.stdout.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	tErr, _ := os.OpenFile(filepath.Join(logsDir, "terminal.stderr.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 
-	termCmd := exec.Command("wine", terminalExe, "/portable")
+	termCmd := exec.Command("wine", winMT5Path, "/portable")
 	termCmd.Dir = workerDir
 	termCmd.Env = env
 	termCmd.Stdout = tOut
 	termCmd.Stderr = tErr
 	if err := termCmd.Start(); err != nil {
+		killPID(xvncCmd.Process.Pid, "xvnc")
+		if wmCmd.Process != nil {
+			killPID(wmCmd.Process.Pid, "wm")
+		}
+		setError()
 		return nil, fmt.Errorf("failed to start terminal: %w", err)
 	}
 	_ = tOut.Close()
@@ -548,8 +636,8 @@ func StartWorker(id string) (*Worker, error) {
 	winLogFile := fmt.Sprintf(`Z:\mt5-fleet\workers\%s\logs\rpyc.log`, id)
 
 	rpycCmd := exec.Command("wine", winPython, rpycScript,
-		"--port", fmt.Sprintf("%d", w.Port),
-		fmt.Sprintf("--token=%s", w.Token),
+		"--port", fmt.Sprintf("%d", port),
+		fmt.Sprintf("--token=%s", token),
 		"--mt5-path", winMT5Path,
 		"--log-file", winLogFile,
 	)
@@ -561,29 +649,17 @@ func StartWorker(id string) (*Worker, error) {
 		_ = termCmd.Process.Kill()
 		_ = rPipeW.Close()
 		_ = ePipeW.Close()
+		killPID(xvncCmd.Process.Pid, "xvnc")
+		if wmCmd.Process != nil {
+			killPID(wmCmd.Process.Pid, "wm")
+		}
+		setError()
 		return nil, fmt.Errorf("failed to start RPyC server: %w", err)
 	}
 	// Close write ends in the parent — goroutines read until EOF when child exits.
 	_ = rPipeW.Close()
 	_ = ePipeW.Close()
-	log.Printf("[start] RPyC server PID %d for %s on port %d", rpycCmd.Process.Pid, id, w.Port)
-
-	// ── x11vnc (VNC server for this worker's display) ─────────────────────────
-	vncLogFile := filepath.Join(logsDir, "x11vnc.log")
-	x11vncCmd := exec.Command("x11vnc",
-		"-display", workerDisplay,
-		"-rfbport", fmt.Sprintf("%d", vncInternalPort),
-		"-nopw", "-forever", "-shared",
-		"-noxdamage", "-q",
-		"-o", vncLogFile,
-	)
-	x11vncCmd.Stdout = os.Stdout
-	x11vncCmd.Stderr = os.Stderr
-	if err := x11vncCmd.Start(); err != nil {
-		log.Printf("[start] Warning: x11vnc failed for %s: %v", id, err)
-	} else {
-		log.Printf("[start] x11vnc PID %d for %s on rfbport %d", x11vncCmd.Process.Pid, id, vncInternalPort)
-	}
+	log.Printf("[start] RPyC server PID %d for %s on port %d", rpycCmd.Process.Pid, id, port)
 
 	// ── websockify (WebSocket → VNC proxy) ────────────────────────────────────
 	wsCmd := exec.Command("websockify",
@@ -598,23 +674,39 @@ func StartWorker(id string) (*Worker, error) {
 		log.Printf("[start] websockify PID %d for %s on port %d", wsCmd.Process.Pid, id, wsContainerPort)
 	}
 
+	// ── Phase 3: record PIDs under lock ────────────────────────────────────────
+	mu.Lock()
+	workers, err = load()
+	if err != nil {
+		mu.Unlock()
+		return nil, err
+	}
+	w, ok = workers[id]
+	if !ok {
+		mu.Unlock()
+		return nil, fmt.Errorf("worker %s disappeared during start", id)
+	}
+
 	w.PIDTerminal = termCmd.Process.Pid
 	w.PIDRPyC = rpycCmd.Process.Pid
-	if xvfbCmd.Process != nil {
-		w.PIDXvfb = xvfbCmd.Process.Pid
+	if wmCmd.Process != nil {
+		w.PIDWM = wmCmd.Process.Pid
 	}
-	if x11vncCmd.Process != nil {
-		w.PIDx11vnc = x11vncCmd.Process.Pid
+	if xvncCmd.Process != nil {
+		w.PIDXvnc = xvncCmd.Process.Pid
 	}
 	if wsCmd.Process != nil {
 		w.PIDWsockify = wsCmd.Process.Pid
 	}
-	w.VNCWSPort = (w.Port - basePort) + vncWSHostBase
+	w.VNCWSPort = (port - basePort) + vncWSHostBase
+	w.KeepAlive = boolPtr(true)
 	w.Status = StatusStarting
 
 	if err := save(workers); err != nil {
+		mu.Unlock()
 		return nil, err
 	}
+	mu.Unlock()
 	return w, nil
 }
 
@@ -626,8 +718,7 @@ func reconcileWorkers() {
 	}
 
 	for _, w := range workers {
-		switch w.Status {
-		case StatusRunning, StatusStarting, StatusStopping:
+		if !shouldSupervisorStart(w) {
 			continue
 		}
 
@@ -635,6 +726,18 @@ func reconcileWorkers() {
 		if _, err := StartWorker(w.ID); err != nil {
 			log.Printf("[supervisor] StartWorker(%s) failed: %v", w.ID, err)
 		}
+	}
+}
+
+func shouldSupervisorStart(w *Worker) bool {
+	if w == nil || !keepAliveEnabled(w) {
+		return false
+	}
+	switch w.Status {
+	case StatusRunning, StatusStarting, StatusStopping:
+		return false
+	default:
+		return true
 	}
 }
 
@@ -655,40 +758,68 @@ func startWorkerSupervisor() {
 // This is a pragmatic readiness signal that avoids false negatives from
 // protocol-level timing during early process startup.
 func WaitForRPyCReady(id string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		workers, err := load()
-		if err != nil {
-			mu.Unlock()
-			return err
-		}
-		w, ok := workers[id]
-		if !ok {
-			mu.Unlock()
-			return fmt.Errorf("worker %s not found", id)
-		}
-		port := w.Port
-		status := deriveStatus(w)
+	// Snapshot port and PIDs once — they don't change while the worker exists.
+	mu.Lock()
+	workers, err := load()
+	if err != nil {
 		mu.Unlock()
+		return err
+	}
+	w, ok := workers[id]
+	if !ok {
+		mu.Unlock()
+		return fmt.Errorf("worker %s not found", id)
+	}
+	port := w.Port
+	pidT := w.PIDTerminal
+	pidR := w.PIDRPyC
+	mu.Unlock()
 
-		if status != StatusRunning {
-			time.Sleep(2 * time.Second)
-			continue
+	deadline := time.Now().Add(timeout)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	for time.Now().Before(deadline) {
+		if !pidAlive(pidT) && !pidAlive(pidR) {
+			return fmt.Errorf("worker %s processes exited before RPyC became ready", id)
 		}
-
-		addr := fmt.Sprintf("127.0.0.1:%d", port)
 		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-		if err != nil {
-			time.Sleep(2 * time.Second)
-			continue
+		if err == nil {
+			_ = conn.Close()
+			return nil
 		}
-		_ = conn.Close()
-		return nil
+		time.Sleep(2 * time.Second)
 	}
 
 	return fmt.Errorf("timeout waiting for RPyC readiness for %s", id)
+}
+
+func RefreshDisplay(id string) error {
+	mu.Lock()
+	workers, err := load()
+	if err != nil {
+		mu.Unlock()
+		return err
+	}
+	w, ok := workers[id]
+	if !ok {
+		mu.Unlock()
+		return fmt.Errorf("worker %q not found", id)
+	}
+	if deriveStatus(w) != StatusRunning {
+		mu.Unlock()
+		return fmt.Errorf("worker %q is not running", id)
+	}
+	displayNum := vncDisplayBase + (w.Port - basePort)
+	mu.Unlock()
+
+	display := fmt.Sprintf(":%d", displayNum)
+	cmd := exec.Command("xrefresh", "-display", display)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("xrefresh on %s failed: %w", display, err)
+	}
+	log.Printf("[refresh] xrefresh on display %s for worker %s", display, id)
+	return nil
 }
 
 func StopWorker(id string) (*Worker, error) {
@@ -708,24 +839,50 @@ func StopWorker(id string) (*Worker, error) {
 
 	w.PIDTerminal = 0
 	w.PIDRPyC = 0
+	w.PIDWM = 0
+	w.PIDXvnc = 0
 	w.PIDXvfb = 0
 	w.PIDx11vnc = 0
 	w.PIDWsockify = 0
+	w.KeepAlive = boolPtr(false)
 	w.Status = StatusStopped
 	if err := save(workers); err != nil {
 		return nil, err
 	}
+	log.Printf("[stop] Worker %s (%s) stopped", id, w.Name)
 	return w, nil
 }
 
-// stopProcs terminates both sub-processes for a worker (RPyC first, then terminal).
+// stopProcs terminates all sub-processes for a worker.
 // Must be called with mu held.
 func stopProcs(w *Worker) {
 	killPID(w.PIDRPyC, "rpyc")
 	killPID(w.PIDTerminal, "terminal")
 	killPID(w.PIDWsockify, "websockify")
-	killPID(w.PIDx11vnc, "x11vnc")
-	killPID(w.PIDXvfb, "xvfb")
+	killPID(w.PIDWM, "wm")
+	killPID(w.PIDXvnc, "xvnc")
+}
+
+func waitForXvncReady(displayNum, rfbPort int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	lockFile := fmt.Sprintf("/tmp/.X%d-lock", displayNum)
+	unixSock := fmt.Sprintf("/tmp/.X11-unix/X%d", displayNum)
+	rfbAddr := fmt.Sprintf("127.0.0.1:%d", rfbPort)
+
+	for time.Now().Before(deadline) {
+		_, lockErr := os.Stat(lockFile)
+		_, sockErr := os.Stat(unixSock)
+		if lockErr == nil && sockErr == nil {
+			conn, err := net.DialTimeout("tcp", rfbAddr, 600*time.Millisecond)
+			if err == nil {
+				_ = conn.Close()
+				return nil
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	return fmt.Errorf("timeout waiting for X display :%d and RFB port %d", displayNum, rfbPort)
 }
 
 func UpdateConfig(id string, config MT5Config) (*Worker, error) {
@@ -745,6 +902,7 @@ func UpdateConfig(id string, config MT5Config) (*Worker, error) {
 	if err := save(workers); err != nil {
 		return nil, err
 	}
+	log.Printf("[config] Worker %s (%s) configuration updated", id, w.Name)
 	return w, nil
 }
 
@@ -764,6 +922,7 @@ func RotateToken(id string) (*Worker, error) {
 	if err := save(workers); err != nil {
 		return nil, err
 	}
+	log.Printf("[token] Worker %s (%s) token rotated", id, w.Name)
 	return w, nil
 }
 
@@ -779,12 +938,14 @@ func RenameWorker(id, name string) (*Worker, error) {
 	if !ok {
 		return nil, nil
 	}
+	old := w.Name
 	if name != "" {
 		w.Name = name
 	}
 	if err := save(workers); err != nil {
 		return nil, err
 	}
+	log.Printf("[rename] Worker %s renamed: %s → %s", id, old, w.Name)
 	return w, nil
 }
 
@@ -817,19 +978,7 @@ func GetWorkerLogs(id string) []string {
 
 	out := make([]string, 0, 400)
 	for _, fname := range logFiles {
-		data, err := os.ReadFile(filepath.Join(logDir, fname))
-		if err != nil {
-			continue
-		}
-		text := strings.ReplaceAll(string(data), "\x00", "")
-		trimmed := strings.TrimRight(text, "\n")
-		if trimmed == "" {
-			continue
-		}
-		lines := strings.Split(trimmed, "\n")
-		if len(lines) > 80 {
-			lines = lines[len(lines)-80:]
-		}
+		lines := tailFile(filepath.Join(logDir, fname), 80)
 		for _, line := range lines {
 			if strings.TrimSpace(line) == "" {
 				continue
@@ -844,4 +993,42 @@ func GetWorkerLogs(id string) []string {
 		return []string{"[logs] waiting for output..."}
 	}
 	return out
+}
+
+// tailFile returns the last n non-empty lines from a file by seeking from the end.
+func tailFile(path string, n int) []string {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return nil
+	}
+
+	// Read at most 64KB from the end; enough for 80 lines in most cases.
+	const maxTail = 64 * 1024
+	size := fi.Size()
+	readSize := size
+	if readSize > maxTail {
+		readSize = maxTail
+	}
+	buf := make([]byte, readSize)
+	_, err = f.ReadAt(buf, size-readSize)
+	if err != nil && err != io.EOF {
+		return nil
+	}
+
+	text := strings.ReplaceAll(string(buf), "\x00", "")
+	trimmed := strings.TrimRight(text, "\n")
+	if trimmed == "" {
+		return nil
+	}
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return lines
 }

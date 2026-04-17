@@ -2,18 +2,22 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
-// ── JSON helpers ───────────────────────────────────────────────────────────────
 // ── Engine log ring buffer ─────────────────────────────────────────────────────
 // All log.Printf calls are tee-d into this ring so the frontend can stream them.
 
@@ -70,39 +74,17 @@ func handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func handleStatus(w http.ResponseWriter, _ *http.Request) {
-	installed := false
-	flag := filepath.Join(fleetDir, ".installed")
+	ready := false
 	referenceBinary := filepath.Join(referenceDir, "terminal64.exe")
-	installerVNCWSPort := envOrInt("INSTALLER_VNC_WS_PORT", 0)
-	if _, err := os.Stat(flag); err == nil {
-		if _, err := os.Stat(referenceBinary); err == nil {
-			if _, err := os.Stat(winPython); err == nil {
-				installed = true
-			}
+	if _, err := os.Stat(referenceBinary); err == nil {
+		if _, err := os.Stat(winPython); err == nil {
+			ready = true
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"installed":             installed,
-		"status":                map[bool]string{true: "ready", false: "installing"}[installed],
-		"installer_vnc_ws_port": installerVNCWSPort,
+		"installed": ready,
+		"status":    map[bool]string{true: "ready", false: "not_installed"}[ready],
 	})
-}
-
-func readInstallLogLines(maxLines int) []string {
-	data, err := os.ReadFile(filepath.Join(fleetDir, "config", "install.log"))
-	if err != nil || len(data) == 0 {
-		return nil
-	}
-	text := strings.ReplaceAll(string(data), "\x00", "")
-	text = strings.TrimRight(text, "\r\n")
-	if text == "" {
-		return nil
-	}
-	lines := strings.Split(text, "\n")
-	if len(lines) > maxLines {
-		lines = lines[len(lines)-maxLines:]
-	}
-	return lines
 }
 
 func handleListWorkers(w http.ResponseWriter, _ *http.Request) {
@@ -121,6 +103,10 @@ func handleCreateWorker(w http.ResponseWriter, r *http.Request) {
 		Config *MT5Config `json:"config"`
 	}
 	if !decodeBody(w, r, &body) {
+		return
+	}
+	if len(body.Name) > 100 {
+		writeError(w, http.StatusBadRequest, "name must be 100 characters or fewer")
 		return
 	}
 	worker, err := CreateWorker(body.Name, body.Token, body.Config)
@@ -225,8 +211,16 @@ func handleRestartWorker(w http.ResponseWriter, r *http.Request) {
 		}
 	}(worker.ID)
 
-	worker, _ = GetWorker(worker.ID)
 	writeJSON(w, http.StatusOK, worker)
+}
+
+func handleRefreshDisplay(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := RefreshDisplay(id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
@@ -266,14 +260,258 @@ func handleGetWorkerLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, GetWorkerLogs(id))
 }
 
-func handleGetEngineLogs(w http.ResponseWriter, _ *http.Request) {
-	flag := filepath.Join(fleetDir, ".installed")
-	if _, err := os.Stat(flag); err != nil {
-		if lines := readInstallLogLines(400); len(lines) > 0 {
-			writeJSON(w, http.StatusOK, lines)
-			return
+// ── Metrics ────────────────────────────────────────────────────────────────────
+
+type systemMetrics struct {
+	CPUPercent  float64        `json:"cpu_percent"`
+	MemTotalMB  int64          `json:"mem_total_mb"`
+	MemUsedMB   int64          `json:"mem_used_mb"`
+	MemPercent  float64        `json:"mem_percent"`
+	DiskTotalMB int64          `json:"disk_total_mb"`
+	DiskUsedMB  int64          `json:"disk_used_mb"`
+	DiskPercent float64        `json:"disk_percent"`
+	Workers     []workerMetric `json:"workers"`
+}
+
+type workerMetric struct {
+	ID     string  `json:"id"`
+	Name   string  `json:"name"`
+	Status string  `json:"status"`
+	MemMB  float64 `json:"mem_mb"`
+	CPU    float64 `json:"cpu_percent"`
+	DiskMB float64 `json:"disk_mb"`
+}
+
+// prevCPU stores the previous /proc/stat snapshot for delta CPU calculation.
+var (
+	prevCPUTotal uint64
+	prevCPUIdle  uint64
+	prevCPUMu    sync.Mutex
+
+	// per-PID previous readings for worker CPU deltas
+	prevPidCPU   = make(map[int]pidCPUSnap)
+	prevPidCPUMu sync.Mutex
+)
+
+type pidCPUSnap struct {
+	utime  uint64
+	stime  uint64
+	wallNs int64
+}
+
+func readSystemCPU() (total, idle uint64) {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0, 0
+	}
+	// first line: cpu  user nice system idle iowait irq softirq steal ...
+	line := strings.SplitN(string(data), "\n", 2)[0]
+	fields := strings.Fields(line)
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return 0, 0
+	}
+	var sum uint64
+	for _, f := range fields[1:] {
+		v, _ := strconv.ParseUint(f, 10, 64)
+		sum += v
+	}
+	idleV, _ := strconv.ParseUint(fields[4], 10, 64)
+	return sum, idleV
+}
+
+func calcSystemCPUPercent() float64 {
+	prevCPUMu.Lock()
+	defer prevCPUMu.Unlock()
+
+	total, idle := readSystemCPU()
+	if prevCPUTotal == 0 {
+		prevCPUTotal = total
+		prevCPUIdle = idle
+		return 0
+	}
+	dt := total - prevCPUTotal
+	di := idle - prevCPUIdle
+	prevCPUTotal = total
+	prevCPUIdle = idle
+	if dt == 0 {
+		return 0
+	}
+	return float64(dt-di) / float64(dt) * 100
+}
+
+func readMemInfo() (totalMB, usedMB int64, pct float64) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, 0, 0
+	}
+	var memTotal, memAvail int64
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "MemTotal:") {
+			fmt.Sscanf(line, "MemTotal: %d kB", &memTotal)
+		} else if strings.HasPrefix(line, "MemAvailable:") {
+			fmt.Sscanf(line, "MemAvailable: %d kB", &memAvail)
 		}
 	}
+	totalMB = memTotal / 1024
+	usedMB = (memTotal - memAvail) / 1024
+	if memTotal > 0 {
+		pct = float64(memTotal-memAvail) / float64(memTotal) * 100
+	}
+	return
+}
+
+func readDiskUsage(path string) (totalMB, usedMB int64, pct float64) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, 0, 0
+	}
+	totalB := stat.Blocks * uint64(stat.Bsize)
+	freeB := stat.Bfree * uint64(stat.Bsize)
+	usedB := totalB - freeB
+	totalMB = int64(totalB / (1024 * 1024))
+	usedMB = int64(usedB / (1024 * 1024))
+	if totalB > 0 {
+		pct = float64(usedB) / float64(totalB) * 100
+	}
+	return
+}
+
+// dirSizeMB returns the total size of a directory tree in MB.
+func dirSizeMB(path string) float64 {
+	var total int64
+	filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip inaccessible entries
+		}
+		if !d.IsDir() {
+			if info, err := d.Info(); err == nil {
+				total += info.Size()
+			}
+		}
+		return nil
+	})
+	return math.Round(float64(total)/(1024*1024)*10) / 10
+}
+
+// pidRSSMB reads RSS from /proc/<pid>/status (VmRSS line, in kB).
+func pidRSSMB(pid int) float64 {
+	if pid <= 0 {
+		return 0
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "VmRSS:") {
+			var kb int64
+			fmt.Sscanf(line, "VmRSS: %d kB", &kb)
+			return float64(kb) / 1024.0
+		}
+	}
+	return 0
+}
+
+// pidCPUPercent returns approximate CPU% for a PID since the last call.
+func pidCPUPercent(pid int) float64 {
+	if pid <= 0 {
+		return 0
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0
+	}
+	// Fields are: pid (comm) state ppid ... utime(14) stime(15) ...
+	// Find closing paren to skip comm which may contain spaces
+	closeP := strings.LastIndex(string(data), ")")
+	if closeP < 0 {
+		return 0
+	}
+	rest := strings.Fields(string(data)[closeP+2:])
+	if len(rest) < 13 {
+		return 0
+	}
+	utime, _ := strconv.ParseUint(rest[11], 10, 64) // field 14 (0-indexed 11 after state)
+	stime, _ := strconv.ParseUint(rest[12], 10, 64) // field 15
+
+	now := time.Now().UnixNano()
+
+	prevPidCPUMu.Lock()
+	defer prevPidCPUMu.Unlock()
+
+	prev, ok := prevPidCPU[pid]
+	prevPidCPU[pid] = pidCPUSnap{utime: utime, stime: stime, wallNs: now}
+	if !ok || now == prev.wallNs {
+		return 0
+	}
+
+	// clock ticks → seconds (typically 100 Hz)
+	hz := uint64(100)
+	dticks := (utime + stime) - (prev.utime + prev.stime)
+	wallSec := float64(now-prev.wallNs) / 1e9
+	if wallSec <= 0 {
+		return 0
+	}
+	return (float64(dticks) / float64(hz)) / wallSec * 100
+}
+
+func handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	cpuPct := calcSystemCPUPercent()
+	memTotal, memUsed, memPct := readMemInfo()
+	diskTotal, diskUsed, diskPct := readDiskUsage(fleetDir)
+
+	workers, _ := ListWorkers()
+	wm := make([]workerMetric, 0, len(workers))
+	for _, wk := range workers {
+		var rss float64
+		var cpu float64
+		// Sum RSS and CPU for all PIDs belonging to this worker
+		pids := []int{wk.PIDTerminal, wk.PIDRPyC, wk.PIDWM, wk.PIDXvnc, wk.PIDWsockify}
+		for _, pid := range pids {
+			rss += pidRSSMB(pid)
+			cpu += pidCPUPercent(pid)
+		}
+		diskMB := dirSizeMB(filepath.Join(workersDir, wk.ID))
+		wm = append(wm, workerMetric{
+			ID:     wk.ID,
+			Name:   wk.Name,
+			Status: string(wk.Status),
+			MemMB:  math.Round(rss*10) / 10,
+			CPU:    math.Round(cpu*10) / 10,
+			DiskMB: diskMB,
+		})
+	}
+
+	// Evict stale entries from the per-PID CPU snapshot map.
+	activePIDs := make(map[int]struct{})
+	for _, wk := range workers {
+		for _, pid := range []int{wk.PIDTerminal, wk.PIDRPyC, wk.PIDWM, wk.PIDXvnc, wk.PIDWsockify} {
+			if pid > 0 {
+				activePIDs[pid] = struct{}{}
+			}
+		}
+	}
+	prevPidCPUMu.Lock()
+	for pid := range prevPidCPU {
+		if _, active := activePIDs[pid]; !active {
+			delete(prevPidCPU, pid)
+		}
+	}
+	prevPidCPUMu.Unlock()
+
+	writeJSON(w, http.StatusOK, systemMetrics{
+		CPUPercent:  math.Round(cpuPct*10) / 10,
+		MemTotalMB:  memTotal,
+		MemUsedMB:   memUsed,
+		MemPercent:  math.Round(memPct*10) / 10,
+		DiskTotalMB: diskTotal,
+		DiskUsedMB:  diskUsed,
+		DiskPercent: math.Round(diskPct*10) / 10,
+		Workers:     wm,
+	})
+}
+
+func handleGetEngineLogs(w http.ResponseWriter, _ *http.Request) {
 	engineLogMu.Lock()
 	lines := make([]string, len(engineLogRing))
 	copy(lines, engineLogRing)
@@ -289,6 +527,10 @@ func handleRenameWorker(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &body) {
 		return
 	}
+	if len(body.Name) > 100 {
+		writeError(w, http.StatusBadRequest, "name must be 100 characters or fewer")
+		return
+	}
 	worker, err := RenameWorker(id, body.Name)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -299,6 +541,48 @@ func handleRenameWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, worker)
+}
+
+// ── VNC WebSocket proxy ────────────────────────────────────────────────────────
+// Proxies WebSocket connections through the API so only one port is exposed.
+
+const installerWSPort = 6799
+
+func vncProxy(localPort int) http.Handler {
+	target := &url.URL{Scheme: "http", Host: fmt.Sprintf("localhost:%d", localPort)}
+	rp := httputil.NewSingleHostReverseProxy(target)
+	rp.FlushInterval = -1
+	base := rp.Director
+	rp.Director = func(req *http.Request) {
+		base(req)
+		req.URL.Path = "/"
+		req.URL.RawPath = ""
+		req.Host = target.Host
+	}
+	return rp
+}
+
+func handleVNCWorker(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	worker, err := GetWorker(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if worker == nil {
+		writeError(w, http.StatusNotFound, "worker '"+id+"' not found")
+		return
+	}
+	if worker.Port == 0 {
+		writeError(w, http.StatusServiceUnavailable, "worker has no port assigned")
+		return
+	}
+	localPort := vncWSLocalBase + (worker.Port - basePort)
+	vncProxy(localPort).ServeHTTP(w, r)
+}
+
+func handleVNCInstaller(w http.ResponseWriter, r *http.Request) {
+	vncProxy(installerWSPort).ServeHTTP(w, r)
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────────
@@ -329,7 +613,11 @@ func main() {
 	mux.HandleFunc("PATCH /workers/{id}/name", handleRenameWorker)
 	mux.HandleFunc("GET /workers/{id}/logs", handleGetWorkerLogs)
 	mux.HandleFunc("POST /workers/{id}/rotate-token", handleRotateToken)
+	mux.HandleFunc("POST /workers/{id}/refresh-display", handleRefreshDisplay)
 	mux.HandleFunc("GET /logs", handleGetEngineLogs)
+	mux.HandleFunc("GET /metrics", handleMetrics)
+	mux.HandleFunc("/vnc/workers/{id}", handleVNCWorker)
+	mux.HandleFunc("/vnc/installer", handleVNCInstaller)
 
 	log.Printf("mt5-fleet engine control API listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
@@ -351,4 +639,26 @@ func envOrInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+// filteredEnv returns os.Environ() with overrides applied. Any existing keys
+// that match an override are removed first to prevent duplicates (e.g. DISPLAY).
+func filteredEnv(overrides ...string) []string {
+	keys := make(map[string]struct{}, len(overrides))
+	for _, o := range overrides {
+		if k, _, ok := strings.Cut(o, "="); ok {
+			keys[k] = struct{}{}
+		}
+	}
+	env := os.Environ()
+	filtered := make([]string, 0, len(env)+len(overrides))
+	for _, e := range env {
+		if k, _, ok := strings.Cut(e, "="); ok {
+			if _, dup := keys[k]; dup {
+				continue
+			}
+		}
+		filtered = append(filtered, e)
+	}
+	return append(filtered, overrides...)
 }

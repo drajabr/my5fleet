@@ -1,0 +1,38 @@
+#!/bin/sh
+# bspwm config for MT5 worker displays (VNC).
+# Dynamic tiling: single window fills the screen; multiple windows auto-tile.
+
+bspc monitor -d I
+
+bspc config border_width         0
+bspc config window_gap           0
+bspc config top_padding          0
+bspc config bottom_padding       0
+bspc config left_padding         0
+bspc config right_padding        0
+
+bspc config single_monocle       true
+bspc config gapless_monocle      true
+
+# Automatically balance splits so windows get equal space.
+bspc config automatic_scheme     alternate
+bspc config split_ratio          0.50
+
+# Focus follows pointer — useful for VNC interaction.
+bspc config focus_follows_pointer true
+
+# All windows are tiled by default (no floating).
+bspc rule -a "*" state=tiled
+
+# ── Retile on screen resize ────────────────────────────────────────────────────
+# When noVNC triggers a remote resize, Xvnc updates the screen geometry and
+# bspwm emits monitor_geometry events. This watcher re-equalises and re-tiles
+# all windows so they fill the new screen with no black gaps.
+(bspc subscribe monitor_geometry | while read -r _line; do
+    bspc monitor -d I 2>/dev/null
+    for nid in $(bspc query -N -n .local 2>/dev/null); do
+        bspc node "$nid" -t tiled 2>/dev/null
+    done
+    bspc node -f -t '~tiled' 2>/dev/null
+    bspc node -e -t tiled 2>/dev/null
+done) &

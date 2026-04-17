@@ -41,7 +41,7 @@ for d in sys.argv[1:]:
                             hit = True
                     if hit:
                         patched += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"Warning: {f}: {exc}", file=sys.stderr)
 
 print(f"Patched {patched}/{total} PE files")

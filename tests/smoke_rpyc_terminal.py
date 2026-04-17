@@ -158,7 +158,7 @@ def delete_worker(api_base: str, worker_id: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke-test mt5 worker start + RPyC connectivity")
-    parser.add_argument("--api-base", default="http://localhost:8080/api", help="Base API URL")
+    parser.add_argument("--api-base", default="http://localhost:17380/api", help="Base API URL")
     parser.add_argument("--rpyc-host", default="localhost", help="Host for direct RPyC socket")
     parser.add_argument(
         "--strict-root-call",

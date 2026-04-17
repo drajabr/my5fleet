@@ -1,4 +1,4 @@
-# ── Stage 1: build the Go control API ─────────────────────────────────────────
+# ── Stage 1a: build the Go control API ────────────────────────────────────────
 FROM golang:1.22-alpine AS go-builder
 WORKDIR /build
 COPY control_api/go.mod .
@@ -6,18 +6,25 @@ COPY control_api/*.go .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-w -s" -trimpath -o control-api .
 
+# ── Stage 1b: build the tiling window manager ─────────────────────────────────
+FROM golang:1.22-alpine AS tilewm-builder
+WORKDIR /build
+COPY tilewm/go.mod tilewm/go.sum ./
+RUN go mod download
+COPY tilewm/*.go .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-w -s" -trimpath -o autotilewm .
+
 # ── Stage 2: Wine + Xvfb runtime (Debian + WineHQ stable) ────────────────────
 FROM debian:bookworm-slim
-
-ARG INSTALL_REFERENCE_AT_BUILD=1
 
 # ── System packages + WineHQ stable ──────────────────────────────────────────
 # Using WineHQ stable on Debian (same approach as gmag11/MetaTrader5-Docker)
 # avoids the anti-debugger detection issues that Alpine's community Wine has.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        wget curl gnupg2 ca-certificates software-properties-common \
-        xvfb xauth x11-utils x11vnc ratpoison \
+        wget gnupg2 ca-certificates \
+        xvfb x11-utils tigervnc-standalone-server \
         supervisor procps unzip python3 python3-pip bash \
     && mkdir -pm755 /etc/apt/keyrings \
     && wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
@@ -41,19 +48,16 @@ RUN mkdir -p \
 # does NOT bust this expensive cache layer (~10-15 min, ~1.5 GB result).
 COPY scripts/install_reference.sh /opt/mt5/scripts/install_reference.sh
 RUN chmod +x /opt/mt5/scripts/install_reference.sh \
-        && if [ "$INSTALL_REFERENCE_AT_BUILD" = "1" ]; then \
-                 FLEET_DIR=/mt5-fleet \
-                 WINEPREFIX=/mt5-fleet/wineprefix \
-                 DISPLAY=:99 \
-                 WINEDEBUG=-all \
-                 /opt/mt5/scripts/install_reference.sh; \
-             else \
-                 mkdir -p /mt5-fleet/config; \
-             fi
+    && FLEET_DIR=/mt5-fleet \
+       WINEPREFIX=/mt5-fleet/wineprefix \
+       DISPLAY=:99 \
+       WINEDEBUG=-all \
+       /opt/mt5/scripts/install_reference.sh
 
 # ── Control API binary (from builder) ─────────────────────────────────────────
 RUN mkdir -p /opt/mt5/control_api
 COPY --from=go-builder /build/control-api /opt/mt5/control_api/server
+COPY --from=tilewm-builder /build/autotilewm /usr/local/bin/autotilewm
 
 # ── Remaining scripts ─────────────────────────────────────────────────────────
 COPY scripts/ /opt/mt5/scripts/

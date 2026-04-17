@@ -4,7 +4,7 @@ services:
   # Runs Wine + Xvfb + MT5 terminals + RPyC servers + internal control API.
   # The control API (port 18810) is intentionally NOT published to the host.
   engine:
-    image: ${ENGINE_IMAGE:-ghcr.io/your-org/mt5-fleet-engine:latest}
+    image: ${ENGINE_IMAGE:-ghcr.io/drajabr/mt5-fleet-engine:latest}
     container_name: engine
     restart: unless-stopped
     environment:
@@ -31,13 +31,13 @@ services:
   # ── api ──────────────────────────────────────────────────────────────────────
   # Serves the single-page frontend and proxies management calls to the engine.
   api:
-    image: ${API_IMAGE:-ghcr.io/your-org/mt5-fleet-api:latest}
+    image: ${API_IMAGE:-ghcr.io/drajabr/mt5-fleet-api:latest}
     container_name: api
     restart: unless-stopped
     environment:
       ENGINE_URL: "http://engine:18810"
     ports:
-      - "${WEB_PORT:-8080}:8080"
+      - "${WEB_PORT:-17380}:17380"
     networks:
       - mt5-internal
     depends_on:

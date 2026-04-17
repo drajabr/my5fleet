@@ -25,9 +25,9 @@ COPY --from=builder /build/server /server
 # Frontend assets (docker-compose passes the repo root as build context)
 COPY frontend/ /frontend/
 
-EXPOSE 8080
+EXPOSE 17380
 
 ENV FRONTEND_DIR=/frontend \
-    PORT=8080
+    PORT=17380
 
 ENTRYPOINT ["/server"]

@@ -4,23 +4,59 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>mt5-fleet</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
 
-<!-- ── Header ── -->
-<header>
-  <div class="header-brand">
-    <h1>mt5<span>-fleet</span></h1>
-    <span id="engine-badge" class="engine-badge" title="Engine: checking…">●</span>
-  </div>
-  <button class="btn btn-primary" id="add-btn" onclick="openAddModal()">+ Add Worker</button>
-</header>
-
 <!-- ── Body: sidebar + VNC panel ── -->
 <div id="content">
   <aside id="sidebar">
+    <!-- Sidebar header: brand + settings -->
+    <div class="sidebar-header">
+      <div class="sidebar-header-left">
+        <h1 class="brand-title"><span class="brand-mt5">mt5</span><span class="brand-fleet">fleet</span></h1>
+        <div id="engine-pill" class="status-pill" title="Engine: checking…">
+          <span id="engine-dot" class="status-dot status-dot--idle"></span>
+          <span id="engine-pill-text">v1.0</span>
+        </div>
+      </div>
+      <div class="sidebar-header-right">
+        <div class="ui-controls-wrap" id="quick-controls-wrap" aria-label="Quick style controls group">
+          <button class="icon-btn icon-btn--square" id="uiControlsToggleBtn" type="button" title="Toggle quick controls" aria-label="Toggle quick controls" style="width:30px;min-width:30px;height:30px">&#9881;</button>
+          <div class="ui-quick-controls is-collapsed" id="uiQuickControls" aria-label="Quick style controls">
+            <div class="quick-control-item">
+              <button class="icon-btn icon-btn--square" id="backgroundCycleBtn" type="button" title="Select background theme" aria-label="Select background theme">&#11035;</button>
+            </div>
+            <div class="quick-control-item">
+              <button class="icon-btn icon-btn--square icon-btn--theme-dot" id="accentCycleBtn" type="button" title="Select accent color" aria-label="Select accent color"></button>
+            </div>
+            <div class="quick-control-item">
+              <button class="icon-btn icon-btn--square" id="themeToggleBtn" type="button" title="Select light or dark theme" aria-label="Select light or dark theme">&#127769;</button>
+            </div>
+            <div class="quick-control-item">
+              <button class="icon-btn icon-btn--square" id="fontCycleBtn" type="button" title="Select font" aria-label="Select font">B</button>
+            </div>
+            <div class="quick-control-item">
+              <button class="icon-btn icon-btn--square" id="fontSizeCycleBtn" type="button" title="Select font size" aria-label="Select font size">3</button>
+            </div>
+            <div class="quick-control-picker is-collapsed" id="quickControlPicker" aria-live="polite"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- System metrics bar -->
+    <div class="header-metrics" id="header-metrics">
+      <span class="metric-chip" id="metric-cpu" title="System CPU usage">CPU <b>—</b></span>
+      <span class="metric-chip" id="metric-mem" title="System memory usage">RAM <b>—</b></span>
+      <span class="metric-chip" id="metric-disk" title="Disk usage">Disk <b>—</b></span>
+    </div>
+    <!-- Worker list -->
     <ul id="worker-list"></ul>
+    <!-- Add worker button at bottom -->
+    <div class="sidebar-footer">
+      <button class="btn btn-primary" id="add-btn" type="button" title="Add Worker" aria-label="Add Worker" onclick="startAddWorker()"><span id="add-btn-icon"></span> Add Worker</button>
+    </div>
   </aside>
   <div id="sidebar-resizer" class="resizer resizer-x" title="Drag to resize sidebar"></div>
   <div id="vnc-panel">
@@ -29,38 +65,16 @@
         <span>Select a worker to view its display (logs panel is below)</span>
       </div>
       <div id="vnc-screen"></div>
-      <iframe id="vnc-iframe" style="display:none; border:none; width:100%; height:100%; position:absolute; inset:0; z-index:1"></iframe>
     </div>
     <div id="log-resizer" class="resizer resizer-y" title="Drag to resize logs"></div>
     <div id="log-panel">
-      <div id="log-lines"><div class="log-line muted">Select a worker to stream logs.</div></div>
-    </div>
-  </div>
-</div>
-
-<!-- ── Add / Rename worker modal ── -->
-<div class="modal-backdrop" id="worker-modal">
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-    <h2 id="modal-title">Add Worker</h2>
-
-    <div class="form-group">
-      <label for="f-name">Display Name <span style="color:var(--muted)">(optional)</span></label>
-      <input class="form-control" id="f-name" type="text" placeholder="My Broker" />
-    </div>
-
-    <div class="form-group" id="f-token-group">
-      <label>RPyC Token</label>
-      <div style="display:flex;gap:8px;align-items:center">
-        <input class="form-control" id="f-token" type="text" readonly style="font-family:monospace;font-size:12px" />
-        <button class="btn btn-ghost" style="white-space:nowrap" onclick="copyText(document.getElementById('f-token').value)">Copy</button>
-        <button class="btn btn-warning btn-xs" id="f-token-rotate" style="white-space:nowrap;display:none" onclick="rotateTokenModal()">Rotate</button>
+      <div class="log-tab-bar" id="log-tab-bar">
+        <button class="log-tab active" id="log-tab-system" type="button" onclick="switchLogTab('system')">System</button>
+        <button class="log-tab" id="log-tab-worker" type="button" onclick="switchLogTab('worker')">Worker</button>
       </div>
-      <span id="f-token-hint" style="font-size:11px;color:var(--muted)">Save this — it won't be shown again after you close this dialog.</span>
-    </div>
-
-    <div class="form-actions">
-      <button class="btn btn-ghost" onclick="closeModal('worker-modal')">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn" onclick="saveWorker()">Add</button>
+      <div id="log-content">
+        <div id="log-lines"><div class="log-line muted">Waiting for engine…</div></div>
+      </div>
     </div>
   </div>
 </div>
@@ -68,39 +82,117 @@
 <!-- ── Toast ── -->
 <div id="toast"></div>
 
-<!-- ── Engine status overlay (shown while connecting / installing) ── -->
-<div id="status-overlay">
-  <div class="status-bar">
-    <div class="status-spinner"></div>
-    <h2 id="status-title">Connecting to engine…</h2>
-    <span id="status-msg" class="status-msg"></span>
-  </div>
-  <div class="status-body">
-    <div id="status-vnc-wrap" class="status-vnc-wrap hidden">
-      <div id="status-vnc-screen" class="status-vnc-screen"></div>
-    </div>
-    <pre id="status-log" class="status-log"></pre>
-  </div>
-</div>
-
 <script>
+// ── Constants ─────────────────────────────────────────────────────────────────
+const THEME_KEY = 'fleetThemePreference';
+const ACCENT_KEY = 'fleetAccentPreference';
+const BACKGROUND_KEY = 'fleetBackgroundPreference';
+const FONT_KEY = 'fleetFontPreference';
+const FONT_SIZE_KEY = 'fleetFontSizePreference';
+const QUICK_CONTROLS_COLLAPSED_KEY = 'fleetQuickControlsCollapsed';
+const SELECTED_KEY = 'fleetSelectedWorker';
+const SIDEBAR_W_KEY = 'fleetSidebarWidth';
+const LOG_H_KEY = 'fleetLogHeight';
+const LOG_TAB_KEY = 'fleetLogTab';
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let _workers = [];
-let _editingId = null;   // null = creating, string = editing
-let _selectedId = null;
+let _metrics = null;     // system + per-worker metrics
+let _metricsTimer = null;
+let _editingId = null;   // null = not editing, string = editing worker id
+let _addingWorker = false; // true when inline add form is shown
+let _selectedId = localStorage.getItem(SELECTED_KEY) || null;
 let _pollTimer = null;
 let _logTimer = null;
 let _engineLogActive = false; // true when log panel is showing engine-level logs
-let _sidebarWidth = 300;
-let _logHeight = 180;
-let _overlayLogLines = [];
-let _overlayVncPort = 0;
-let _workerVncPort = 0;
+let _lastRenderSig = '';
+let _lastLogSig = '';
+let _lastEngineLogSig = '';
+let _lastMetricsSig = '';
+let _sidebarWidth = parseInt(localStorage.getItem(SIDEBAR_W_KEY), 10) || 300;
+let _logHeight = parseInt(localStorage.getItem(LOG_H_KEY), 10) || 180;
+let _workerVncId = null;
 let _workerRfb = null;
-let _overlayRfb = null;
 let _workerRetryTimer = null;
-let _overlayRetryTimer = null;
 let _rfbClassPromise = null;
+let _status = null;
+let _activeQuickPicker = null;
+let _installerRfb = null;
+let _activeLogTab = localStorage.getItem(LOG_TAB_KEY) || 'system';
+
+const ACCENT_PRESETS = [
+  { key: 'steel',   accent: '#5c6bc0', accentHl: '#7986cb', rgb: '92,107,192' },
+  { key: 'emerald', accent: '#2f8f62', accentHl: '#59bd87', rgb: '47,143,98' },
+  { key: 'ember',   accent: '#b56b2d', accentHl: '#dfa15c', rgb: '181,107,45' },
+  { key: 'ink',     accent: '#2d7bb5', accentHl: '#67aee0', rgb: '45,123,181' },
+  { key: 'teal',    accent: '#2b8f8e', accentHl: '#58c8c7', rgb: '43,143,142' },
+  { key: 'mint',    accent: '#2ea680', accentHl: '#66d9b3', rgb: '46,166,128' },
+  { key: 'gold',    accent: '#b0882a', accentHl: '#e5bd5d', rgb: '176,136,42' },
+  { key: 'rose',    accent: '#b5456b', accentHl: '#e07090', rgb: '181,69,107' },
+  { key: 'violet',  accent: '#8b5cf6', accentHl: '#a78bfa', rgb: '139,92,246' },
+  { key: 'coral',   accent: '#e0705c', accentHl: '#f09080', rgb: '224,112,92' },
+];
+
+const BACKGROUND_PRESETS = [
+  { key: 'charcoal', label: '⬛', bg: '#101417', surface: '#171c22', panel: '#0e1216', border: '#2a3140', text: '#e3e8f0', muted: '#8a95a8', tintRgb: '100,120,160' },
+  { key: 'onyx',     label: '⚫', bg: '#111111', surface: '#1a1a1a', panel: '#0e0e0e', border: '#2e2e2e', text: '#e4e4e4', muted: '#8a8a8a', tintRgb: '128,128,128' },
+  { key: 'graphite', label: '🔘', bg: '#151618', surface: '#1e2023', panel: '#121315', border: '#35373d', text: '#e3e4e8', muted: '#8d8f98', tintRgb: '130,140,160' },
+  { key: 'steel',    label: '🩶', bg: '#12161b', surface: '#1a2028', panel: '#10141a', border: '#2c3544', text: '#dfe6f0', muted: '#8898ac', tintRgb: '90,115,150' },
+  { key: 'ash',      label: '🪨', bg: '#141517', surface: '#1c1d20', panel: '#111213', border: '#333538', text: '#e0e1e4', muted: '#909298', tintRgb: '120,125,140' },
+  { key: 'obsidian', label: '🌑', bg: '#0b0d10', surface: '#131620', panel: '#090b0e', border: '#242838', text: '#e0e4f0', muted: '#8890a8', tintRgb: '80,95,135' },
+  { key: 'slate',    label: '🩵', bg: '#10151c', surface: '#18212c', panel: '#0e141c', border: '#2e3d50', text: '#e4ecf4', muted: '#8ea1b5', tintRgb: '65,110,170' },
+  { key: 'midnight', label: '🌃', bg: '#0d0d1a', surface: '#16162a', panel: '#0b0b1e', border: '#2a2a45', text: '#e0e0f0', muted: '#8888aa', tintRgb: '92,107,192' },
+];
+
+const FONT_PRESETS = [
+  { key: 'manrope', label: 'M', family: "'Manrope', 'Inter', Arial, sans-serif" },
+  { key: 'sora', label: 'R', family: "'Sora', 'Inter', Arial, sans-serif" },
+  { key: 'inter', label: 'I', family: "'Inter', Arial, sans-serif" },
+  { key: 'dm-sans', label: 'D', family: "'DM Sans', 'Inter', Arial, sans-serif" },
+  { key: 'jetbrains', label: 'J', family: "'JetBrains Mono', 'Fira Code', monospace" },
+  { key: 'fira-code', label: 'F', family: "'Fira Code', 'JetBrains Mono', monospace" },
+  { key: 'bahnschrift', label: 'B', family: "'Bahnschrift', 'Barlow Condensed', Arial, sans-serif" },
+  { key: 'arial', label: 'A', family: "Arial, sans-serif" },
+  { key: 'verdana', label: 'V', family: "Verdana, Arial, sans-serif" },
+  { key: 'courier', label: 'C', family: "'Courier New', Courier, monospace" },
+  { key: 'georgia', label: 'G', family: "Georgia, 'Times New Roman', serif" },
+  { key: 'times', label: 'T', family: "'Times New Roman', Times, serif" },
+];
+
+const FONT_SIZE_PRESETS = [
+  { key: '1', label: '1', size: '14px' },
+  { key: '2', label: '2', size: '15px' },
+  { key: '3', label: '3', size: '16px' },
+  { key: '4', label: '4', size: '17px' },
+  { key: '5', label: '5', size: '18px' },
+];
+
+const ICONS = {
+  add: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z" fill="currentColor"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7V4h11v13h-3v3H5V7h3Zm2 0h6v10h1V6h-7v1Zm-3 2v9h7V9H7Z" fill="currentColor"/></svg>',
+  rotate: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 1 1-6.9 8H3l3.5-4L10 13H7.1A5 5 0 1 0 12 7c1.2 0 2.3.4 3.2 1.1L17 6.3A7 7 0 0 0 12 5Z" fill="currentColor"/></svg>',
+  close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.7 5.3 5.3 5.3 5.3-5.3 1.4 1.4-5.3 5.3 5.3 5.3-1.4 1.4-5.3-5.3-5.3 5.3-1.4-1.4 5.3-5.3-5.3-5.3 1.4-1.4Z" fill="currentColor"/></svg>',
+  save: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11l3 3v13H5V4Zm2 2v12h10V8.2L15.8 7H15v4H9V6H7Zm4 0v3h2V6h-2Zm1 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" fill="currentColor"/></svg>',
+  restart: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 1 1-6.9 8H3l3.5-4L10 13H7.1A5 5 0 1 0 12 7c1.2 0 2.3.4 3.2 1.1L17 6.3A7 7 0 0 0 12 5Z" fill="currentColor"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16.9 3.5 3.6 3.6-11 11-4.4.8.8-4.4 11-11Zm-9.6 12.3-.3 1.5 1.5-.3 9.5-9.5-1.2-1.2-9.5 9.5Zm10.7-10.7-1.2-1.2 1-1a.9.9 0 0 1 1.3 0l.9.9a.9.9 0 0 1 0 1.3l-1 1Z" fill="currentColor"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 6h2v8h-2V9Zm4 0h2v8h-2V9ZM7 9h2v8H7V9Zm1 10h8a2 2 0 0 0 2-2V8H6v9a2 2 0 0 0 2 2Z" fill="currentColor"/></svg>',
+  open: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5h-2V8.4l-6.3 6.3-1.4-1.4L15.6 7H14V5ZM5 7h6v2H7v8h8v-4h2v6H5V7Z" fill="currentColor"/></svg>',
+  logs: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5V5Zm2 2v2h10V7H7Zm0 4v2h10v-2H7Zm0 4v2h6v-2H7Z" fill="currentColor"/></svg>',
+  spinner: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a8 8 0 1 0 8 8h-2a6 6 0 1 1-6-6V4Z" fill="currentColor"/></svg>',
+};
+
+function icon(name) {
+  return ICONS[name] || '';
+}
+
+function getDisplayWorkers() {
+  const regular = [..._workers].sort((a, b) => (a.port || 0) - (b.port || 0));
+  return regular;
+}
+
+function getWorkerById(id) {
+  return getDisplayWorkers().find(w => w.id === id) || null;
+}
 
 async function getRFBClass() {
   if (!_rfbClassPromise) {
@@ -111,120 +203,37 @@ async function getRFBClass() {
 
 function _clearRetryTimers() {
   if (_workerRetryTimer) { clearTimeout(_workerRetryTimer); _workerRetryTimer = null; }
-  if (_overlayRetryTimer) { clearTimeout(_overlayRetryTimer); _overlayRetryTimer = null; }
 }
 
 function disconnectWorkerVNC() {
   if (_workerRetryTimer) { clearTimeout(_workerRetryTimer); _workerRetryTimer = null; }
-  if (_workerRfb) {
-    try { _workerRfb.disconnect(); } catch (_) {}
-    _workerRfb = null;
-  }
-  const iframe = document.getElementById('vnc-iframe');
-  if (iframe) { iframe.style.display = 'none'; iframe.src = ''; }
+  _workerRfb = null;
 }
 
-function disconnectOverlayVNC() {
-  if (_overlayRetryTimer) { clearTimeout(_overlayRetryTimer); _overlayRetryTimer = null; }
-  if (_overlayRfb) {
-    try { _overlayRfb.disconnect(); } catch (_) {}
-    _overlayRfb = null;
-  }
-}
-
-// Size a VNC canvas to fit its wrapper at 4:3 (1024×768 Xvfb).
-// For flex-growing wrappers: read actual wrapper size and fit canvas inside.
-// For fixed wrappers (overlay): compute from parent, set both wrapper + canvas.
-const FB_ASPECT = 4 / 3;
-function _fitVnc(wrapEl, screenEl) {
-  if (!wrapEl || !screenEl) return;
-  if (wrapEl.offsetParent === null) return;
-  const parent = wrapEl.parentElement;
-  if (!parent) return;
-  const cs = getComputedStyle(wrapEl);
-  const flexGrow = parseFloat(cs.flexGrow) || 0;
-
-  if (flexGrow > 0) {
-    // Wrapper fills remaining space via flex — just size the canvas inside it
-    const aw = wrapEl.clientWidth;
-    const ah = wrapEl.clientHeight;
-    if (aw <= 0 || ah <= 0) return;
-    let w, h;
-    if (aw / ah > FB_ASPECT) {
-      h = ah; w = Math.round(h * FB_ASPECT);
-    } else {
-      w = aw; h = Math.round(w / FB_ASPECT);
-    }
-    screenEl.style.width = w + 'px';
-    screenEl.style.height = h + 'px';
-  } else {
-    // Fixed wrapper (overlay VNC) — compute from parent
-    const dir = getComputedStyle(parent).flexDirection;
-    const pw = parent.clientWidth;
-    const ph = parent.clientHeight;
-    if (pw <= 0 || ph <= 0) return;
-    let w, h;
-    if (dir === 'row') {
-      h = ph; w = Math.round(h * FB_ASPECT);
-      if (w > pw * 0.85) { w = Math.round(pw * 0.85); h = Math.round(w / FB_ASPECT); }
-    } else {
-      w = pw; h = Math.round(w / FB_ASPECT);
-      const maxH = ph - 66;
-      if (maxH > 0 && h > maxH) { h = maxH; w = Math.round(h * FB_ASPECT); }
-    }
-    screenEl.style.width = w + 'px';
-    screenEl.style.height = h + 'px';
-    wrapEl.style.width = w + 'px';
-    wrapEl.style.height = h + 'px';
-  }
-}
+// Trigger noVNC to recalculate its scaling to match the container size.
 function _fitAllVnc() {
-  _fitVnc(document.getElementById('status-vnc-wrap'), document.getElementById('status-vnc-screen'));
-  _fitVnc(document.getElementById('vnc-view'), document.getElementById('vnc-screen'));
+  // iframe-based VNC — nothing to do here
 }
 
-async function connectWorkerVNC(port) {
-  const p = Number(port || 0);
+async function connectWorkerVNC(workerId) {
+  if (!workerId) return;
   const target = document.getElementById('vnc-screen');
-  if (!target || p <= 0) return;
+  if (!target) return;
 
   disconnectWorkerVNC();
-  _workerVncPort = p;
+  _workerVncId = workerId;
   target.innerHTML = '';
 
-  const RFB = await getRFBClass();
-  if (_workerVncPort !== p) return;
-
-  // Use the stock noVNC viewer in an iframe
-  const iframe = document.getElementById('vnc-iframe');
-  if (iframe) {
-    iframe.src = `/noVNC/vnc.html?host=${location.hostname}&port=${p}&path=&autoconnect=true&resize=scale&reconnect=true&reconnect_delay=3000`;
-    iframe.style.display = '';
-  }
-  _workerRfb = { disconnect() { if (iframe) { iframe.src = ''; } } };
-}
-
-async function connectOverlayVNC(port) {
-  const p = Number(port || 0);
-  const target = document.getElementById('status-vnc-screen');
-  if (!target || p <= 0) return;
-
-  disconnectOverlayVNC();
-  _overlayVncPort = p;
-  target.innerHTML = '';
-
-  const RFB = await getRFBClass();
-  if (_overlayVncPort !== p) return;
-
-  const rfb = new RFB(target, `ws://${location.hostname}:${p}/`);
-  rfb.scaleViewport = true;
-  rfb.resizeSession = true;
-  requestAnimationFrame(_fitAllVnc);
-  rfb.addEventListener('disconnect', () => {
-    if (_overlayVncPort !== p) return;
-    _overlayRetryTimer = setTimeout(() => { connectOverlayVNC(p); }, 3000);
-  });
-  _overlayRfb = rfb;
+  const encrypt = location.protocol === 'https:';
+  const wsPath = `/api/vnc/workers/${workerId}`;
+  const src = `/noVNC/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=3000&path=${encodeURIComponent(wsPath)}&encrypt=${encrypt}`;
+  const iframe = document.createElement('iframe');
+  iframe.id = 'vnc-iframe-worker';
+  iframe.src = src;
+  iframe.style.cssText = 'width:100%;height:100%;border:none;display:block;background:#000';
+  iframe.allow = 'clipboard-read; clipboard-write';
+  target.appendChild(iframe);
+  _workerRfb = iframe; // keep reference for cleanup
 }
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -246,14 +255,17 @@ async function api(method, path, body) {
 // ── Poll loop ─────────────────────────────────────────────────────────────────
 async function fetchWorkers() {
   try {
+    _status = await api('GET', 'status');
     _workers = await api('GET', 'workers');
-    const hasSelected = !!_selectedId && _workers.some(w => w.id === _selectedId);
-    if (!hasSelected && _workers.length) {
-      selectWorker(_workers[0].id);
+    const displayWorkers = getDisplayWorkers();
+    const hasSelected = !!_selectedId && displayWorkers.some(w => w.id === _selectedId);
+    if (!hasSelected && displayWorkers.length) {
+      selectWorker(displayWorkers[0].id);
       return;
     }
-    if (!hasSelected && !_workers.length) {
+    if (!hasSelected && !displayWorkers.length) {
       _selectedId = null;
+      localStorage.removeItem(SELECTED_KEY);
       startEngineLogs();
     }
     renderList();
@@ -278,33 +290,185 @@ const STATUS_COLOR = {
 
 function renderList() {
   const list = document.getElementById('worker-list');
-  if (!_workers.length) {
-    list.innerHTML = `<li class="list-empty">No workers yet.</li>`;
-    return;
+  const displayWorkers = getDisplayWorkers();
+  const sig = _selectedId + '|' + _addingWorker + '|' + _editingId + '|' + JSON.stringify(displayWorkers.map(w => [w.id, w.name, w.status, w.port, w.config]));
+  if (sig === _lastRenderSig) return;
+  _lastRenderSig = sig;
+  let html = '';
+  if (!displayWorkers.length && !_addingWorker) {
+    html = `<li class="list-empty">No workers yet.</li>`;
+  } else {
+    html += displayWorkers.map(w => {
+      if (_editingId === w.id) return renderInlineEditForm(w);
+      return renderRow(w);
+    }).join('');
   }
-  list.innerHTML = _workers.map(renderRow).join('');
+  if (_addingWorker) {
+    html += renderInlineAddForm();
+  }
+  list.innerHTML = html;
+  if (_addingWorker) {
+    const formEl = document.getElementById('inline-add-form');
+    if (formEl) formEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+function nextDefaultName() {
+  const existing = _workers.map(w => w.name);
+  for (let i = 1; ; i++) {
+    const name = `Worker ${i}`;
+    if (!existing.includes(name)) return name;
+  }
+}
+
+function renderInlineAddForm() {
+  const defaultName = nextDefaultName();
+  const token = _pendingToken || '';
+  return `
+  <li class="inline-form-row" id="inline-add-form">
+    <div class="inline-row">
+      <input class="form-control mono" id="inline-add-token" type="text" readonly value="${esc(token)}" placeholder="token" />
+      <button class="icon-btn icon-btn--square btn-ghost" type="button" title="Copy token" aria-label="Copy token" onclick="event.stopPropagation();copyText(document.getElementById('inline-add-token').value)" style="width:28px;min-width:28px;height:28px">${icon('copy')}</button>
+    </div>
+    <div class="inline-row">
+      <input class="form-control" id="inline-add-name" type="text" placeholder="${esc(defaultName)}" value="" autofocus />
+      <button class="btn btn-ghost btn-sq" type="button" title="Cancel" aria-label="Cancel" onclick="cancelAdd()">${icon('close')}</button>
+      <button class="btn btn-primary btn-sq" type="button" id="inline-add-confirm" title="Create" aria-label="Create" onclick="confirmAdd()">${icon('add')}</button>
+    </div>
+  </li>`;
+}
+
+function renderInlineEditForm(w) {
+  return `
+  <li class="inline-form-row" id="inline-edit-form">
+    <div class="inline-row">
+      <input class="form-control mono" id="inline-edit-token" type="text" readonly value="${esc(w.token || '')}" placeholder="token" />
+      <button class="icon-btn icon-btn--square btn-ghost" type="button" title="Copy token" aria-label="Copy token" onclick="event.stopPropagation();copyText(document.getElementById('inline-edit-token').value)" style="width:28px;min-width:28px;height:28px">${icon('copy')}</button>
+      <button class="icon-btn icon-btn--square btn-warning" type="button" title="Rotate token" aria-label="Rotate token" onclick="event.stopPropagation();rotateTokenInline('${w.id}')" style="width:28px;min-width:28px;height:28px">${icon('rotate')}</button>
+    </div>
+    <div class="inline-row">
+      <input class="form-control" id="inline-edit-name" type="text" value="${esc(w.name)}" placeholder="${esc(w.name)}" autofocus />
+      <button class="btn btn-ghost btn-sq" type="button" title="Cancel" aria-label="Cancel" onclick="cancelEdit()">${icon('close')}</button>
+      <button class="btn btn-primary btn-sq" type="button" title="Save" aria-label="Save" onclick="confirmEdit('${w.id}')">${icon('save')}</button>
+    </div>
+  </li>`;
+}
+
+let _pendingToken = '';
+
+function startAddWorker() {
+  if (_addInFlight || _addingWorker) return;
+  _addingWorker = true;
+  _editingId = null;
+  _pendingToken = generateToken();
+  _lastRenderSig = '';
+  renderList();
+  setTimeout(() => { const el = document.getElementById('inline-add-name'); if (el) el.focus(); }, 50);
+}
+
+function cancelAdd() {
+  _addingWorker = false;
+  _pendingToken = '';
+  _lastRenderSig = '';
+  renderList();
+}
+
+let _addInFlight = false;
+async function confirmAdd() {
+  if (_addInFlight) return;
+  const nameEl = document.getElementById('inline-add-name');
+  const tokenEl = document.getElementById('inline-add-token');
+  const btn = document.getElementById('inline-add-confirm');
+  const addBtn = document.getElementById('add-btn');
+  const name = nameEl?.value.trim() || nameEl?.placeholder || '';
+  const token = tokenEl?.value.trim() || '';
+  _addInFlight = true;
+  if (btn) { btn.disabled = true; btn.innerHTML = icon('spinner'); }
+  if (addBtn) addBtn.disabled = true;
+  api('POST', 'workers', { token, ...(name ? { name } : {}) })
+    .then(() => {
+      toast('Worker created.');
+      _addingWorker = false;
+      _pendingToken = '';
+      _lastRenderSig = '';
+      fetchWorkers();
+      switchLogTab('system');
+    })
+    .catch(e => {
+      toast(e.message, true);
+      if (btn) { btn.disabled = false; btn.innerHTML = icon('add'); }
+    })
+    .finally(() => {
+      _addInFlight = false;
+      if (addBtn) addBtn.disabled = false;
+    });
+}
+
+function startEdit(id) {
+  _editingId = id;
+  _addingWorker = false;
+  _lastRenderSig = '';
+  renderList();
+  setTimeout(() => { const el = document.getElementById('inline-edit-name'); if (el) el.focus(); }, 50);
+}
+
+function cancelEdit() {
+  _editingId = null;
+  _lastRenderSig = '';
+  renderList();
+}
+
+async function confirmEdit(id) {
+  const nameEl = document.getElementById('inline-edit-name');
+  const name = nameEl?.value.trim() || '';
+  try {
+    await api('PATCH', `workers/${id}/name`, { name });
+    toast('Worker renamed.');
+    _editingId = null;
+    _lastRenderSig = '';
+    fetchWorkers();
+    switchLogTab('system');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function rotateTokenInline(id) {
+  if (!confirm('Generate a new token? The old one will stop working immediately.')) return;
+  try {
+    const worker = await api('POST', `workers/${id}/rotate-token`);
+    const tokenEl = document.getElementById('inline-edit-token');
+    if (tokenEl) tokenEl.value = worker.token;
+    toast('Token rotated — copy the new token!');
+    switchLogTab('system');
+  } catch (e) { toast(e.message, true); }
 }
 
 function renderRow(w) {
   const color   = STATUS_COLOR[w.status] || 'var(--grey)';
-  const isRunning = w.status === 'running' || w.status === 'starting';
   const isBusy    = w.status === 'starting' || w.status === 'stopping';
   const isSelected = w.id === _selectedId;
-  const account = w.config ? `${w.config.login} @ ${w.config.server}` : '';
+  const displayName = w.name.length > 30 ? w.name.substring(0, 30) : w.name;
+  const wm = getWorkerMetrics(w.id);
+  const actions = `<div class="row-actions" onclick="event.stopPropagation()">
+      <button class="icon-btn icon-btn--square btn-primary" title="Restart" aria-label="Restart" onclick="restartWorker('${w.id}')" ${isBusy ? 'disabled' : ''}>${icon('restart')}</button>
+      <button class="icon-btn icon-btn--square btn-ghost" title="Configure" aria-label="Configure" onclick="startEdit('${w.id}')">${icon('edit')}</button>
+      <button class="icon-btn icon-btn--square btn-danger btn-delete" id="del-${w.id}" title="Delete" aria-label="Delete" onclick="deleteWorker('${w.id}', this)">${icon('trash')}</button>
+    </div>`;
 
   return `
   <li class="worker-row${isSelected ? ' selected' : ''}" id="row-${w.id}"
       onclick="selectWorker('${w.id}')">
-    <span class="status-dot" style="background:${color}"></span>
-    <div class="row-info">
-      <span class="row-name">${esc(w.name)}</span>
-      ${account ? `<span class="row-sub">${esc(account)}</span>` : ''}
+    <div class="row-top">
+      <span class="status-dot" style="background:${color}"></span>
+      <span class="row-name" title="${esc(w.name)}">${esc(displayName)}</span>
+      ${actions}
     </div>
-    <span class="row-port">:${w.port}</span>
-    <div class="row-actions" onclick="event.stopPropagation()">
-      <button class="btn btn-primary btn-xs" title="Restart" onclick="restartWorker('${w.id}')" ${isBusy ? 'disabled' : ''}>&#x27F3;</button>
-      <button class="btn btn-ghost btn-xs" title="Configure" onclick="openEditModal('${w.id}')">&#x2699;</button>
-      <button class="btn btn-danger btn-xs" title="Delete" onclick="deleteWorker('${w.id}')">&#x1F5D1;</button>
+    <div class="row-bottom">
+      <div class="row-metrics">
+        <span class="row-metric">CPU <b>${wm ? fmtPct(wm.cpu_percent) : '—'}</b></span>
+        <span class="row-metric">RAM <b>${wm ? fmtMB(wm.mem_mb) : '—'}</b></span>
+        <span class="row-metric">Disk <b>${wm ? fmtMB(wm.disk_mb) : '—'}</b></span>
+      </div>
+      <span class="row-port">:${w.port}</span>
     </div>
   </li>`;
 }
@@ -312,29 +476,32 @@ function renderRow(w) {
 // ── Worker selection + VNC ────────────────────────────────────────────────────
 function selectWorker(id) {
   _selectedId = id;
+  localStorage.setItem(SELECTED_KEY, id || '');
   renderList();
-  const w = _workers.find(x => x.id === id);
+  const w = getWorkerById(id);
   const screen = document.getElementById('vnc-screen');
   const placeholder = document.getElementById('vnc-placeholder');
   if (!w) {
     disconnectWorkerVNC();
-    _workerVncPort = 0;
+    _workerVncId = null;
     if (screen) screen.innerHTML = '';
     placeholder.style.display = 'flex';
+    document.getElementById('vnc-refresh-btn').style.display = 'none';
     stopLogPolling();
     return;
   }
-  startLogPolling(id);
-  if (!w.vnc_ws_port) {
+  switchLogTab('worker');
+  if (w.status !== 'running') {
     disconnectWorkerVNC();
-    _workerVncPort = 0;
+    _workerVncId = null;
     if (screen) screen.innerHTML = '';
     placeholder.style.display = 'flex';
+    document.getElementById('vnc-refresh-btn').style.display = 'none';
     return;
   }
-  _workerVncPort = Number(w.vnc_ws_port);
+  _workerVncId = id;
   placeholder.style.display = 'none';
-  connectWorkerVNC(_workerVncPort);
+  connectWorkerVNC(id);
 }
 
 function esc(s) {
@@ -347,13 +514,16 @@ function esc(s) {
 async function fetchLogs(id) {
   try {
     const lines = await api('GET', `workers/${id}/logs`);
-    const panel  = document.getElementById('log-panel');
+    const sig = JSON.stringify(lines);
+    if (sig === _lastLogSig) return;
+    _lastLogSig = sig;
+    const scrollEl = document.getElementById('log-content');
     const box    = document.getElementById('log-lines');
     if (!Array.isArray(lines) || lines.length === 0) {
       box.innerHTML = '<div class="log-line muted">No logs yet for this worker.</div>';
     } else {
       box.innerHTML = lines.map(l => `<div class="log-line">${esc(l)}</div>`).join('');
-      panel.scrollTop = panel.scrollHeight;
+      scrollEl.scrollTop = scrollEl.scrollHeight;
     }
   } catch (e) {
     const box = document.getElementById('log-lines');
@@ -364,13 +534,16 @@ async function fetchLogs(id) {
 
 function startLogPolling(id) {
   stopLogPolling();
+  _lastLogSig = '';
   fetchLogs(id);
-  _logTimer = setInterval(() => fetchLogs(id), 3000);
+  _logTimer = setInterval(() => fetchLogs(id), 5000);
 }
 
 function stopLogPolling() {
   if (_logTimer) { clearInterval(_logTimer); _logTimer = null; }
   _engineLogActive = false;
+  _lastLogSig = '';
+  _lastEngineLogSig = '';
 }
 
 // ── Splitter resizing ────────────────────────────────────────────────────────
@@ -391,10 +564,11 @@ function initSplitters() {
     document.body.classList.add('resizing-x');
     const onMove = ev => {
       const rect = content.getBoundingClientRect();
-      const min = 220;
-      const max = Math.max(360, rect.width - 360);
+      const min = 280;
+      const max = Math.max(min, Math.floor(rect.width / 3));
       _sidebarWidth = Math.min(max, Math.max(min, ev.clientX - rect.left));
       sidebar.style.width = `${_sidebarWidth}px`;
+      localStorage.setItem(SIDEBAR_W_KEY, _sidebarWidth);
       _fitAllVnc();
     };
     const onUp = () => {
@@ -415,9 +589,10 @@ function initSplitters() {
     const onMove = ev => {
       const rect = vncPanel.getBoundingClientRect();
       const min = 90;
-      const max = Math.max(140, rect.height - 180);
+      const max = Math.max(min, Math.floor(rect.height / 3));
       _logHeight = Math.min(max, Math.max(min, rect.bottom - ev.clientY));
       logPanel.style.height = `${_logHeight}px`;
+      localStorage.setItem(LOG_H_KEY, _logHeight);
       _fitAllVnc();
     };
     const onUp = () => {
@@ -435,23 +610,50 @@ function initSplitters() {
 // ── Worker actions ─────────────────────────────────────────────────────────────
 async function restartWorker(id) {
   const btn = document.querySelector(`#row-${id} [title="Restart"]`);
-  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+  if (btn) { btn.disabled = true; btn.innerHTML = icon('spinner'); }
   try {
     await api('POST', `workers/${id}/restart`);
     toast('Worker restarting…');
     fetchWorkers();
+    switchLogTab('system');
   } catch (e) { toast(e.message, true); }
-  finally { if (btn) { btn.disabled = false; btn.innerHTML = '&#x27F3;'; } }
+  finally { if (btn) { btn.disabled = false; btn.innerHTML = icon('restart'); } }
 }
 
-async function deleteWorker(id) {
-  const w = _workers.find(x => x.id === id);
-  if (!confirm(`Delete worker "${w?.name || id}"? This removes its directory.`)) return;
-  try {
-    await api('DELETE', `workers/${id}`);
-    toast('Worker deleted.');
-    fetchWorkers();
-  } catch (e) { toast(e.message, true); }
+let _deleteArmed = null;
+let _deleteTimer = null;
+let _deleteInFlight = null;
+
+function deleteWorker(id, btn) {
+  if (_deleteInFlight === id) return; // already deleting
+  if (_deleteArmed === id) {
+    // Second click — execute (non-blocking)
+    clearTimeout(_deleteTimer);
+    _deleteArmed = null;
+    btn.classList.remove('btn-delete--armed');
+    btn.disabled = true;
+    btn.innerHTML = icon('spinner');
+    _deleteInFlight = id;
+    api('DELETE', `workers/${id}`)
+      .then(() => { toast('Worker deleted.'); fetchWorkers(); switchLogTab('system'); })
+      .catch(e => { toast(e.message, true); if (btn) { btn.disabled = false; btn.innerHTML = icon('trash'); } })
+      .finally(() => { _deleteInFlight = null; });
+    return;
+  }
+  // First click — arm
+  resetDeleteArmed();
+  _deleteArmed = id;
+  btn.classList.add('btn-delete--armed');
+  _deleteTimer = setTimeout(() => resetDeleteArmed(), 3000);
+}
+
+function resetDeleteArmed() {
+  if (_deleteArmed) {
+    const prev = document.getElementById('del-' + _deleteArmed);
+    if (prev) prev.classList.remove('btn-delete--armed');
+  }
+  clearTimeout(_deleteTimer);
+  _deleteArmed = null;
 }
 
 async function rotateToken(id) {
@@ -471,93 +673,287 @@ function generateToken() {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-// ── Add / Rename modal ────────────────────────────────────────────────────────
-function openAddModal() {
-  _editingId = null;
-  document.getElementById('modal-title').textContent = 'Add Worker';
-  document.getElementById('modal-save-btn').textContent = 'Add';
-  document.getElementById('f-name').value = '';
-  document.getElementById('f-token').value = generateToken();
-  document.getElementById('f-token-group').style.display = '';
-  document.getElementById('f-token-hint').style.display = '';
-  document.getElementById('f-token-rotate').style.display = 'none';
-  openModal('worker-modal');
+// ── Modal helpers (kept for potential future use) ────────────────────────────
+function openModal(id)  { document.getElementById(id)?.classList.add('open'); }
+function closeModal(id) { document.getElementById(id)?.classList.remove('open'); }
+
+function getPreferredTheme() {
+  return localStorage.getItem(THEME_KEY) || 'dark';
 }
 
-function openEditModal(id) {
-  const w = _workers.find(x => x.id === id);
-  if (!w) return;
-  _editingId = id;
-  document.getElementById('modal-title').textContent = `Settings: ${w.name}`;
-  document.getElementById('modal-save-btn').textContent = 'Save';
-  document.getElementById('f-name').value = w.name || '';
-  document.getElementById('f-token').value = w.token || '';
-  document.getElementById('f-token-group').style.display = '';
-  document.getElementById('f-token-hint').style.display = 'none';
-  document.getElementById('f-token-rotate').style.display = '';
-  openModal('worker-modal');
+function getPreferredAccent() {
+  return localStorage.getItem(ACCENT_KEY) || ACCENT_PRESETS[0].key;
 }
 
-async function saveWorker() {
-  const name  = document.getElementById('f-name').value.trim();
-  const token = document.getElementById('f-token').value.trim();
-  const btn   = document.getElementById('modal-save-btn');
-  const origText = btn.textContent;
+function getPreferredBackground() {
+  return localStorage.getItem(BACKGROUND_KEY) || BACKGROUND_PRESETS[0].key;
+}
 
-  btn.disabled = true;
-  btn.textContent = _editingId ? 'Saving…' : 'Creating…';
+function getPreferredFont() {
+  return localStorage.getItem(FONT_KEY) || FONT_PRESETS[0].key;
+}
 
-  try {
-    if (_editingId) {
-      await api('PATCH', `workers/${_editingId}/name`, { name });
-      toast('Worker renamed.');
-    } else {
-      const payload = { token };
-      if (name) payload.name = name;
-      await api('POST', 'workers', payload);
-      toast('Worker created.');
+function getPreferredFontSize() {
+  return localStorage.getItem(FONT_SIZE_KEY) || FONT_SIZE_PRESETS[1].key;
+}
+
+function getStoredIndex(key, presets, fallback = 0) {
+  const saved = localStorage.getItem(key);
+  const index = presets.findIndex(p => p.key === saved);
+  return index >= 0 ? index : fallback;
+}
+
+function applyTheme(theme) {
+  document.body.dataset.theme = theme;
+  localStorage.setItem(THEME_KEY, theme);
+  const btn = document.getElementById('themeToggleBtn');
+  if (btn) {
+    btn.innerHTML = theme === 'dark' ? '&#127769;' : '&#9728;';
+    btn.title = theme === 'dark' ? 'Theme: dark' : 'Theme: light';
+  }
+}
+
+function applyAccent(index) {
+  const preset = ACCENT_PRESETS[index % ACCENT_PRESETS.length];
+  document.documentElement.style.setProperty('--accent', preset.accent);
+  document.documentElement.style.setProperty('--accent-hl', preset.accentHl);
+  document.documentElement.style.setProperty('--accent-rgb', preset.rgb);
+  localStorage.setItem(ACCENT_KEY, preset.key);
+  const btn = document.getElementById('accentCycleBtn');
+  if (btn) {
+    btn.style.setProperty('--dot-color', preset.accentHl);
+    btn.title = `Accent: ${preset.key}`;
+  }
+}
+
+function applyBackground(index) {
+  const preset = BACKGROUND_PRESETS[index % BACKGROUND_PRESETS.length];
+  document.documentElement.style.setProperty('--bg', preset.bg);
+  document.documentElement.style.setProperty('--surface', preset.surface);
+  document.documentElement.style.setProperty('--panel', preset.panel);
+  document.documentElement.style.setProperty('--border', preset.border);
+  document.documentElement.style.setProperty('--text', preset.text);
+  document.documentElement.style.setProperty('--muted', preset.muted);
+  localStorage.setItem(BACKGROUND_KEY, preset.key);
+  const btn = document.getElementById('backgroundCycleBtn');
+  if (btn) {
+    btn.innerHTML = preset.label;
+    btn.title = `Background: ${preset.key}`;
+    btn.style.background = `radial-gradient(circle at 50% 50%, rgba(${preset.tintRgb}, 0.34), rgba(${preset.tintRgb}, 0.16))`;
+    btn.style.borderColor = `rgba(${preset.tintRgb}, 0.52)`;
+  }
+}
+
+function applyFont(index) {
+  const preset = FONT_PRESETS[index % FONT_PRESETS.length];
+  document.documentElement.style.setProperty('--font', preset.family);
+  localStorage.setItem(FONT_KEY, preset.key);
+  const btn = document.getElementById('fontCycleBtn');
+  if (btn) {
+    btn.textContent = preset.label;
+    btn.title = `Font: ${preset.key}`;
+  }
+}
+
+function applyFontSize(index) {
+  const preset = FONT_SIZE_PRESETS[index % FONT_SIZE_PRESETS.length];
+  document.documentElement.style.setProperty('--font-size', preset.size);
+  localStorage.setItem(FONT_SIZE_KEY, preset.key);
+  const btn = document.getElementById('fontSizeCycleBtn');
+  if (btn) {
+    btn.textContent = preset.label;
+    btn.title = `Font size: ${preset.size}`;
+  }
+}
+
+function setQuickControlsCollapsed(collapsed) {
+  const controls = document.getElementById('uiQuickControls');
+  const toggleBtn = document.getElementById('uiControlsToggleBtn');
+  if (controls) {
+    controls.classList.toggle('is-collapsed', collapsed);
+  }
+  if (toggleBtn) {
+    toggleBtn.innerHTML = collapsed ? '&#9881;' : '&#10005;';
+    toggleBtn.title = collapsed ? 'Show style controls' : 'Hide style controls';
+    toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+}
+
+function hideQuickPicker() {
+  const picker = document.getElementById('quickControlPicker');
+  if (!picker) return;
+  picker.classList.add('is-collapsed');
+  picker.innerHTML = '';
+  _activeQuickPicker = null;
+}
+
+function applyControlSelection(type, key) {
+  if (type === 'accent') {
+    applyAccent(Math.max(0, ACCENT_PRESETS.findIndex(p => p.key === key)));
+  }
+  if (type === 'background') {
+    applyBackground(Math.max(0, BACKGROUND_PRESETS.findIndex(p => p.key === key)));
+  }
+  if (type === 'theme') {
+    applyTheme(key);
+  }
+  if (type === 'font') {
+    applyFont(Math.max(0, FONT_PRESETS.findIndex(p => p.key === key)));
+  }
+  if (type === 'fontSize') {
+    applyFontSize(Math.max(0, FONT_SIZE_PRESETS.findIndex(p => p.key === key)));
+  }
+}
+
+function showQuickPicker(type, triggerEl, action = {}) {
+  const picker = document.getElementById('quickControlPicker');
+  if (!picker) return;
+
+  const isOpenSamePicker = _activeQuickPicker === type && !picker.classList.contains('is-collapsed');
+  if (isOpenSamePicker && !action.forceRefresh) {
+    hideQuickPicker();
+    return;
+  }
+
+  let activeKey = '';
+  let options = [];
+  if (type === 'accent') {
+    activeKey = getPreferredAccent();
+    options = ACCENT_PRESETS.map((preset) => ({
+      key: preset.key,
+      label: preset.key.charAt(0).toUpperCase() + preset.key.slice(1),
+      swatchStyle: `background:${preset.accentHl}; border-radius:50%; border-color:rgba(0,0,0,0.12)`,
+      previewText: '',
+      labelStyle: `color:${preset.accentHl}; font-weight:600`,
+    }));
+  }
+  if (type === 'background') {
+    activeKey = getPreferredBackground();
+    options = BACKGROUND_PRESETS.map((preset) => ({
+      key: preset.key,
+      label: preset.key.charAt(0).toUpperCase() + preset.key.slice(1),
+      swatchStyle: `background:radial-gradient(circle at 35% 30%, rgba(${preset.tintRgb}, 0.65), ${preset.bg}); border-color:rgba(${preset.tintRgb}, 0.6); border-radius:6px`,
+      previewText: '',
+      labelStyle: '',
+    }));
+  }
+  if (type === 'theme') {
+    activeKey = getPreferredTheme();
+    options = [
+      { key: 'light', label: 'Light', swatchStyle: 'background:#f4f0e7; border-radius:5px', previewText: '', labelStyle: '' },
+      { key: 'dark', label: 'Dark', swatchStyle: 'background:#0d0d1a; border-radius:5px', previewText: '', labelStyle: '' },
+    ];
+  }
+  if (type === 'font') {
+    activeKey = getPreferredFont();
+    options = FONT_PRESETS.map((preset) => ({
+      key: preset.key,
+      label: preset.key.charAt(0).toUpperCase() + preset.key.slice(1),
+      swatchStyle: `font-family:${preset.family}; font-size:1rem; font-weight:700; color:var(--text); background:none; border-color:transparent; width:auto; height:auto; padding:0 4px`,
+      previewText: 'Ag',
+      labelStyle: `font-family:${preset.family}`,
+    }));
+  }
+  if (type === 'fontSize') {
+    activeKey = getPreferredFontSize();
+    options = FONT_SIZE_PRESETS.map((preset) => ({
+      key: preset.key,
+      label: `Size ${preset.label} (${preset.size})`,
+      swatchStyle: `font-size:${preset.size}; font-weight:700; color:var(--text); background:none; border-color:transparent; width:auto; height:auto; padding:0 2px`,
+      previewText: 'A',
+      labelStyle: `font-size:${preset.size}`,
+    }));
+  }
+
+  picker.innerHTML = options.map((option) => `
+    <button class="quick-picker-option ${option.key === activeKey ? 'is-active' : ''}" type="button" data-picker-type="${type}" data-picker-key="${option.key}" title="${option.label}">
+      <span class="qp-swatch" style="${option.swatchStyle || ''}">${option.previewText || ''}</span>
+      <span class="qp-label" style="${option.labelStyle || ''}">${option.label}</span>
+    </button>
+  `).join('');
+  picker.classList.remove('is-collapsed');
+  _activeQuickPicker = type;
+  if (triggerEl) {
+    const controls = document.getElementById('uiQuickControls');
+    if (controls) {
+      picker.style.left = '0';
+      picker.style.right = '0';
+      picker.style.minWidth = `${controls.clientWidth}px`;
     }
-    closeModal('worker-modal');
-    fetchWorkers();
-  } catch (e) {
-    toast(e.message, true);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = origText;
   }
-}
-
-async function rotateTokenModal() {
-  if (_editingId) {
-    if (!confirm('Generate a new token? The old one will stop working immediately.')) return;
-    try {
-      const worker = await api('POST', `workers/${_editingId}/rotate-token`);
-      document.getElementById('f-token').value = worker.token;
-      toast('Token rotated — copy the new token!');
-    } catch (e) { toast(e.message, true); }
-  } else {
-    // New worker — just regenerate in the field
-    document.getElementById('f-token').value = generateToken();
-    document.getElementById('f-token-hint').style.display = '';
-  }
-}
-
-// ── Modal helpers ─────────────────────────────────────────────────────────────
-function openModal(id)  { document.getElementById(id).classList.add('open'); }
-function closeModal(id) { document.getElementById(id).classList.remove('open'); }
-
-// Close on backdrop click
-document.querySelectorAll('.modal-backdrop').forEach(bd => {
-  bd.addEventListener('click', e => {
-    if (e.target === bd) bd.classList.remove('open');
+  picker.querySelectorAll('.quick-picker-option').forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const selectedType = btn.getAttribute('data-picker-type');
+      const selectedKey = btn.getAttribute('data-picker-key');
+      if (!selectedType || !selectedKey) return;
+      const isSameSelection = selectedKey === activeKey;
+      applyControlSelection(selectedType, selectedKey);
+      if (isSameSelection) {
+        hideQuickPicker();
+        localStorage.setItem(QUICK_CONTROLS_COLLAPSED_KEY, '1');
+        setQuickControlsCollapsed(true);
+        return;
+      }
+      showQuickPicker(selectedType, triggerEl, { forceRefresh: true });
+    });
   });
-});
+}
+
+function initQuickControls() {
+  document.getElementById('add-btn-icon').innerHTML = icon('add');
+
+  document.getElementById('backgroundCycleBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    showQuickPicker('background', e.currentTarget);
+  });
+  document.getElementById('themeToggleBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    showQuickPicker('theme', e.currentTarget);
+  });
+  document.getElementById('accentCycleBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    showQuickPicker('accent', e.currentTarget);
+  });
+  document.getElementById('fontCycleBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    showQuickPicker('font', e.currentTarget);
+  });
+  document.getElementById('fontSizeCycleBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    showQuickPicker('fontSize', e.currentTarget);
+  });
+  document.getElementById('uiControlsToggleBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const collapsed = !document.getElementById('uiQuickControls').classList.contains('is-collapsed');
+    localStorage.setItem(QUICK_CONTROLS_COLLAPSED_KEY, collapsed ? '1' : '0');
+    setQuickControlsCollapsed(collapsed);
+  });
+
+  applyTheme(getPreferredTheme());
+  applyAccent(getStoredIndex(ACCENT_KEY, ACCENT_PRESETS));
+  applyBackground(getStoredIndex(BACKGROUND_KEY, BACKGROUND_PRESETS));
+  applyFont(getStoredIndex(FONT_KEY, FONT_PRESETS));
+  applyFontSize(getStoredIndex(FONT_SIZE_KEY, FONT_SIZE_PRESETS, 1));
+  setQuickControlsCollapsed(localStorage.getItem(QUICK_CONTROLS_COLLAPSED_KEY) !== '0');
+  document.addEventListener('click', e => {
+    const wrap = document.getElementById('quick-controls-wrap');
+    if (!wrap?.contains(e.target)) {
+      hideQuickPicker();
+      localStorage.setItem(QUICK_CONTROLS_COLLAPSED_KEY, '1');
+      setQuickControlsCollapsed(true);
+    }
+  });
+}
 
 // Close on Escape
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
-    document.querySelectorAll('.modal-backdrop.open')
-      .forEach(bd => bd.classList.remove('open'));
+    if (_addingWorker) cancelAdd();
+    if (_editingId) cancelEdit();
+    hideQuickPicker();
+    localStorage.setItem(QUICK_CONTROLS_COLLAPSED_KEY, '1');
+    setQuickControlsCollapsed(true);
   }
 });
 
@@ -587,18 +983,76 @@ function toast(msg, isError = false) {
   _toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
 }
 
+// ── Metrics polling ───────────────────────────────────────────────────────────
+async function fetchMetrics() {
+  try {
+    _metrics = await api('GET', 'metrics');
+    renderHeaderMetrics();
+    renderList(); // re-render to update per-worker metrics
+    pulseEngineDot();
+  } catch (e) {
+    console.warn('fetchMetrics failed:', e);
+  }
+}
+
+function startMetricsPolling() {
+  if (_metricsTimer) return;
+  fetchMetrics();
+  _metricsTimer = setInterval(fetchMetrics, 5000);
+}
+
+function fmtPct(v) { return v != null ? v.toFixed(1) + '%' : '—'; }
+function fmtMB(v) { return v != null ? (v >= 1024 ? (v / 1024).toFixed(1) + ' GB' : Math.round(v) + ' MB') : '—'; }
+
+function metricColor(pct) {
+  if (pct == null) return 'var(--muted)';
+  if (pct >= 90) return 'var(--red)';
+  if (pct >= 70) return 'var(--yellow)';
+  return 'var(--green)';
+}
+
+function renderHeaderMetrics() {
+  if (!_metrics) return;
+  const sig = [_metrics.cpu_percent, _metrics.mem_used_mb, _metrics.mem_total_mb, _metrics.disk_used_mb, _metrics.disk_total_mb].join(',');
+  if (sig === _lastMetricsSig) return;
+  _lastMetricsSig = sig;
+  const cpuEl = document.getElementById('metric-cpu');
+  const memEl = document.getElementById('metric-mem');
+  const diskEl = document.getElementById('metric-disk');
+  if (cpuEl) {
+    cpuEl.innerHTML = `CPU <b>${fmtPct(_metrics.cpu_percent)}</b>`;
+    cpuEl.title = `System CPU: ${fmtPct(_metrics.cpu_percent)}`;
+  }
+  if (memEl) {
+    memEl.innerHTML = `RAM <b>${fmtMB(_metrics.mem_used_mb)}</b> / ${fmtMB(_metrics.mem_total_mb)}`;
+    memEl.title = `Memory: ${fmtMB(_metrics.mem_used_mb)} / ${fmtMB(_metrics.mem_total_mb)} (${fmtPct(_metrics.mem_percent)})`;
+  }
+  if (diskEl) {
+    diskEl.innerHTML = `Disk <b>${fmtMB(_metrics.disk_used_mb)}</b> / ${fmtMB(_metrics.disk_total_mb)}`;
+    diskEl.title = `Disk: ${fmtMB(_metrics.disk_used_mb)} / ${fmtMB(_metrics.disk_total_mb)} (${fmtPct(_metrics.disk_percent)})`;
+  }
+}
+
+function getWorkerMetrics(workerId) {
+  if (!_metrics || !_metrics.workers) return null;
+  return _metrics.workers.find(m => m.id === workerId) || null;
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 // ── Engine log streaming ──────────────────────────────────────────────────────
 async function fetchEngineLogs() {
   try {
     const lines = await api('GET', 'logs');
+    const sig = JSON.stringify(lines);
+    if (sig === _lastEngineLogSig) return;
+    _lastEngineLogSig = sig;
     const box   = document.getElementById('log-lines');
-    const panel = document.getElementById('log-panel');
+    const scrollEl = document.getElementById('log-content');
     if (!Array.isArray(lines) || lines.length === 0) {
       box.innerHTML = '<div class="log-line muted">[engine] No log entries yet.</div>';
     } else {
       box.innerHTML = lines.map(l => `<div class="log-line">${esc(l)}</div>`).join('');
-      panel.scrollTop = panel.scrollHeight;
+      scrollEl.scrollTop = scrollEl.scrollHeight;
     }
   } catch (e) {
     document.getElementById('log-lines').innerHTML =
@@ -614,113 +1068,124 @@ function startEngineLogs() {
   _logTimer = setInterval(fetchEngineLogs, 5000);
 }
 
-// ── Status overlay helpers ────────────────────────────────────────────────────
-function showOverlay(title, msg) {
-  document.getElementById('status-title').textContent = title;
-  document.getElementById('status-msg').textContent   = msg;
-  document.getElementById('status-overlay').classList.remove('hidden');
+// ── Log tab switching ─────────────────────────────────────────────────────────
+function switchLogTab(tab) {
+  _activeLogTab = tab;
+  localStorage.setItem(LOG_TAB_KEY, tab);
+  document.getElementById('log-tab-system').classList.toggle('active', tab === 'system');
+  document.getElementById('log-tab-worker').classList.toggle('active', tab === 'worker');
+  stopLogPolling();
+  if (tab === 'system') {
+    startEngineLogs();
+  } else if (_selectedId) {
+    startLogPolling(_selectedId);
+  } else {
+    document.getElementById('log-lines').innerHTML =
+      '<div class="log-line muted">Select a worker to stream logs.</div>';
+  }
 }
 
-function hideOverlay() {
-  document.getElementById('status-overlay').classList.add('hidden');
+// ── Installer VNC ─────────────────────────────────────────────────────────────
+async function connectInstallerVNC() {
+  const target = document.getElementById('vnc-screen');
+  if (!target) return;
+  disconnectWorkerVNC();
+  target.innerHTML = '';
+  document.getElementById('vnc-placeholder').style.display = 'none';
+
+  const encrypt = location.protocol === 'https:';
+  const wsPath = '/api/vnc/installer';
+  const src = `/noVNC/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=3000&path=${encodeURIComponent(wsPath)}&encrypt=${encrypt}`;
+  const iframe = document.createElement('iframe');
+  iframe.id = 'vnc-iframe-installer';
+  iframe.src = src;
+  iframe.style.cssText = 'width:100%;height:100%;border:none;display:block;background:#000';
+  iframe.allow = 'clipboard-read; clipboard-write';
+  target.appendChild(iframe);
+  _installerRfb = iframe;
 }
 
-function setOverlayVNC(port) {
-  const wrap = document.getElementById('status-vnc-wrap');
-  const screen = document.getElementById('status-vnc-screen');
-  const p = Number(port || 0);
-  if (!wrap || !screen) return;
-  if (p <= 0) {
-    wrap.classList.add('hidden');
-    disconnectOverlayVNC();
-    screen.innerHTML = '';
-    _overlayVncPort = 0;
-    return;
+function disconnectInstallerVNC() {
+  if (_installerRfb) {
+    _installerRfb = null;
   }
-  if (_overlayVncPort !== p) {
-    _overlayVncPort = p;
-    connectOverlayVNC(p);
-  }
-  wrap.classList.remove('hidden');
-  requestAnimationFrame(_fitAllVnc);
 }
+
+// ── Engine readiness ──────────────────────────────────────────────────────────
 
 function setEngineBadge(state) {
-  const el = document.getElementById('engine-badge');
-  if (!el) return;
-  const COLOR = { ready: 'var(--green)', installing: 'var(--yellow)', error: 'var(--red)' };
-  el.style.color = COLOR[state] || 'var(--grey)';
-  el.title = 'Engine: ' + state;
+  const dot = document.getElementById('engine-dot');
+  const pill = document.getElementById('engine-pill');
+  if (!dot || !pill) return;
+  // Remove all state classes
+  dot.className = 'status-dot';
+  pill.classList.remove('status-pill--error');
+  if (state === 'ready') {
+    dot.classList.add('status-dot--ok');
+    // Pulse once on transition to ready
+    dot.classList.add('status-dot--ok-pulse');
+    dot.addEventListener('animationend', () => dot.classList.remove('status-dot--ok-pulse'), { once: true });
+  } else if (state === 'starting') {
+    dot.classList.add('status-dot--loading');
+  } else if (state === 'error') {
+    dot.classList.add('status-dot--error');
+    pill.classList.add('status-pill--error');
+  } else {
+    dot.classList.add('status-dot--idle');
+  }
+  pill.title = 'Engine: ' + state;
+}
+
+function pulseEngineDot() {
+  const dot = document.getElementById('engine-dot');
+  if (!dot || !dot.classList.contains('status-dot--ok')) return;
+  dot.classList.add('status-dot--ok-pulse');
+  dot.addEventListener('animationend', () => dot.classList.remove('status-dot--ok-pulse'), { once: true });
+}
+
+function setAddWorkerEnabled(enabled) {
+  const btn = document.getElementById('add-btn');
+  if (!btn) return;
+  btn.disabled = !enabled;
+  btn.title = enabled ? 'Add Worker' : 'Engine is starting — please wait';
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function _pollInstallLog() {
-  try {
-    const lines = await api('GET', 'logs');
-    if (Array.isArray(lines) && lines.length) {
-      setOverlayLog(lines.slice(-30));
-    }
-  } catch (e) {
-    appendOverlayLog(`[ui] ${e.message || String(e)}`);
-  }
-}
-
-function setOverlayLog(lines) {
-  _overlayLogLines = Array.isArray(lines) ? lines.slice(-30) : [];
-  const el = document.getElementById('status-log');
-  if (!el) return;
-  el.textContent = _overlayLogLines.join('\n');
-  el.scrollTop = el.scrollHeight;
-}
-
-function appendOverlayLog(line) {
-  if (!line) return;
-  const last = _overlayLogLines[_overlayLogLines.length - 1];
-  if (last === line) return;
-  _overlayLogLines.push(line);
-  if (_overlayLogLines.length > 30) {
-    _overlayLogLines = _overlayLogLines.slice(-30);
-  }
-  setOverlayLog(_overlayLogLines);
-}
-
 async function waitForEngine() {
+  setAddWorkerEnabled(false);
+  startEngineLogs();
+  connectInstallerVNC();
   for (;;) {
     try {
       const s = await api('GET', 'status');
-      const state = s.status === 'ready' ? 'ready' : 'installing';
+      _status = s;
+      const state = s.status === 'ready' ? 'ready' : 'starting';
       setEngineBadge(state);
-      if (state === 'ready') return;
-      showOverlay(
-        'Installing MT5\u2026',
-        'First-build installs MT5 and Windows Python \u2014 this takes 10\u201315\u00a0minutes.'
-      );
-      setOverlayVNC(s.installer_vnc_ws_port || 0);
-      await _pollInstallLog();
+      if (state === 'ready') {
+        disconnectInstallerVNC();
+        setAddWorkerEnabled(true);
+        return;
+      }
     } catch (e) {
       setEngineBadge('error');
-      showOverlay('Connecting to engine\u2026', 'Retrying\u2026');
-      setOverlayVNC(0);
-      appendOverlayLog(`[ui] ${e.message || String(e)}`);
-      await _pollInstallLog();
     }
     await sleep(5000);
   }
 }
 
 async function boot() {
-  showOverlay('Connecting to engine\u2026', '');
-  setOverlayLog(['[ui] Waiting for engine status...']);
+  setAddWorkerEnabled(false);
+  setEngineBadge('starting');
   await waitForEngine();
-  hideOverlay();
-  setOverlayVNC(0);
   setEngineBadge('ready');
   startPolling();
+  startMetricsPolling();
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 initSplitters();
+initQuickControls();
 window.addEventListener('resize', _fitAllVnc);
 boot();
 </script>

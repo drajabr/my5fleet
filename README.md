@@ -71,8 +71,8 @@ Then click **+ Add Worker**, fill in your MT5 credentials, and the engine will:
 | `WORKER_PORT_RANGE_END` | `18912` | Last RPyC port published to host |
 | `VNC_WS_PORT_RANGE_START` | `19000` | First host port mapped to worker noVNC websocket (container 6800+) |
 | `VNC_WS_PORT_RANGE_END` | `19100` | Last host port mapped to worker noVNC websocket (container 6900) |
-| `ENGINE_IMAGE` | `ghcr.io/your-org/mt5-fleet-engine:latest` | Engine image used by `docker-compose.yml` |
-| `API_IMAGE` | `ghcr.io/your-org/mt5-fleet-api:latest` | API image used by `docker-compose.yml` |
+| `ENGINE_IMAGE` | `ghcr.io/drajabr/mt5-fleet-engine:latest` | Engine image used by `docker-compose.yml` |
+| `API_IMAGE` | `ghcr.io/drajabr/mt5-fleet-api:latest` | API image used by `docker-compose.yml` |
 
 Set them in a `.env` file at the repo root or export them before running `docker compose up`.
 

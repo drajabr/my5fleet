@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # install_reference.sh — installs MT5 + Windows Python into Wine.
-# Can run at Docker build time OR on first container boot (legacy).
-# Starts its own Xvfb if one isn't already running on $DISPLAY.
+# Runs at Docker build time. Starts its own Xvfb for the build.
 set -euo pipefail
 
 export FLEET_DIR="${FLEET_DIR:-/mt5-fleet}"
@@ -14,26 +13,14 @@ PYTHON_WIN_VER="3.11.9"
 PYTHON_EMBED_URL="https://www.python.org/ftp/python/${PYTHON_WIN_VER}/python-${PYTHON_WIN_VER}-embed-amd64.zip"
 MT5_URL="https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
 
-# ── 0. Ensure Xvfb on $DISPLAY ───────────────────────────────────────────────
-# When running under supervisord at container startup, the shared xvfb program
-# may already be starting. Wait briefly for it before spawning our own, or we
-# race and hit "Server is already active for display 99".
-OWNED_XVFB=""
-for i in $(seq 1 10); do
-    if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
-        break
-    fi
-    sleep 1
+# ── 0. Start Xvfb for Wine ───────────────────────────────────────────────────
+echo "[install] Starting Xvfb on $DISPLAY ..."
+Xvfb "$DISPLAY" -screen 0 1920x1080x24 -nolisten tcp &
+OWNED_XVFB=$!
+for i in $(seq 1 30); do
+    xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && break
+    sleep 0.5
 done
-if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
-    echo "[install] Xvfb not running — starting one on $DISPLAY ..."
-    Xvfb "$DISPLAY" -screen 0 1024x768x16 -nolisten tcp &
-    OWNED_XVFB=$!
-    for i in $(seq 1 15); do
-        xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && break
-        sleep 1
-    done
-fi
 if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
     echo "[install] ERROR: Xvfb never came up on $DISPLAY" >&2
     exit 1
@@ -46,13 +33,23 @@ mkdir -p "$WINEPREFIX"
 # WINEDLLOVERRIDES suppresses the "Install Wine Mono" popup dialog
 export WINEDLLOVERRIDES="mscoree=d"
 wineboot --init
-# Give wineserver a moment to settle
-sleep 5
+# Give wineserver a brief moment to settle; wineserver -w handles the real sync.
+sleep 2
 wineserver -w 2>/dev/null || true
 
 # ── 1b. Set Windows 10 mode ──────────────────────────────────────────────────
 echo "[install] Setting Wine to Windows 10 mode ..."
 wine reg add "HKEY_CURRENT_USER\\Software\\Wine" /v Version /t REG_SZ /d "win10" /f 2>/dev/null || true
+wineserver -w 2>/dev/null || true
+
+# ── 1c. Disable Wine decoration expectations ─────────────────────────────────
+# bspwm is a tiling WM with no title bars. By default Wine requests WM
+# decorations and reserves ~30 px for a title bar the WM never draws,
+# leaving a black gap.  Setting Decorated=N tells Wine not to expect any
+# WM-drawn decorations so the client area fills the entire window.
+echo "[install] Disabling Wine decoration expectations (Decorated=N) ..."
+wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" \
+    /v Decorated /t REG_SZ /d "N" /f 2>/dev/null || true
 wineserver -w 2>/dev/null || true
 
 # ── 2. Install MetaTrader 5 ───────────────────────────────────────────────────
@@ -68,15 +65,15 @@ MT5_INSTALL_PID=$!
 # path ("Program Files" vs "Program Files (x86)" vs user AppData).
 echo "[install] Waiting for terminal64.exe to appear (up to 15 min) ..."
 MT5_FOUND=""
-for i in $(seq 1 180); do
+for i in $(seq 1 450); do
     MT5_FOUND=$(find "$WINEPREFIX/drive_c" -name "terminal64.exe" -type f 2>/dev/null | head -1)
     if [ -n "$MT5_FOUND" ]; then
-        echo "[install] terminal64.exe found at: $MT5_FOUND after ~$((i * 5)) seconds."
+        echo "[install] terminal64.exe found at: $MT5_FOUND after ~$((i * 2)) seconds."
         break
     fi
 
-    # Every 60 s check if the installer already exited
-    if [ $((i % 12)) -eq 0 ]; then
+    # Every 30 s check if the installer already exited
+    if [ $((i % 15)) -eq 0 ]; then
         if ! kill -0 "$MT5_INSTALL_PID" 2>/dev/null; then
             echo "[install] Installer exited; doing final scan ..." >&2
             MT5_FOUND=$(find "$WINEPREFIX/drive_c" -name "terminal64.exe" -type f 2>/dev/null | head -1)
@@ -91,8 +88,8 @@ for i in $(seq 1 180); do
             exit 1
         fi
     fi
-    echo "[install] ... still waiting ($((i * 5))s) ..."
-    sleep 5
+    echo "[install] ... still waiting ($((i * 2))s) ..."
+    sleep 2
 done
 
 if [ -z "$MT5_FOUND" ]; then
@@ -168,13 +165,11 @@ for whl in /tmp/wheels/*.whl; do
 done
 echo "[install] Python packages installed."
 
-# ── 5. Clean up and flag ──────────────────────────────────────────────────────
+# ── 5. Clean up ───────────────────────────────────────────────────────────────
 rm -f /tmp/mt5setup.exe /tmp/python-embed.zip
 rm -rf /tmp/wheels
 # Kill Wine background services so the Docker layer stays clean
 wineserver -k 2>/dev/null || true
-# Stop Xvfb if we launched it
-[ -n "$OWNED_XVFB" ] && kill "$OWNED_XVFB" 2>/dev/null || true
-mkdir -p "$FLEET_DIR/config"
-touch "$FLEET_DIR/.installed"
+# Stop Xvfb
+kill "$OWNED_XVFB" 2>/dev/null || true
 echo "[install] Done. Reference install complete."

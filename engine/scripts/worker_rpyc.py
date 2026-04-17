@@ -29,6 +29,7 @@ Client-side connection (native Python):
 """
 
 import argparse
+import datetime
 import hmac
 import logging
 import os
@@ -246,8 +247,6 @@ class MT5Service(rpyc.Service):
     def exposed_copy_rates_from(
         self, symbol: str, timeframe: int, date_from, count: int
     ) -> list:
-        import datetime  # noqa: PLC0415
-
         if isinstance(date_from, (int, float)):
             date_from = datetime.datetime.fromtimestamp(date_from)
         return _to_py(mt5.copy_rates_from(symbol, timeframe, date_from, count))
@@ -260,8 +259,6 @@ class MT5Service(rpyc.Service):
     def exposed_copy_rates_range(
         self, symbol: str, timeframe: int, date_from, date_to
     ) -> list:
-        import datetime  # noqa: PLC0415
-
         if isinstance(date_from, (int, float)):
             date_from = datetime.datetime.fromtimestamp(date_from)
         if isinstance(date_to, (int, float)):
@@ -271,8 +268,6 @@ class MT5Service(rpyc.Service):
     def exposed_copy_ticks_from(
         self, symbol: str, date_from, count: int, flags: int
     ) -> list:
-        import datetime  # noqa: PLC0415
-
         if isinstance(date_from, (int, float)):
             date_from = datetime.datetime.fromtimestamp(date_from)
         return _to_py(mt5.copy_ticks_from(symbol, date_from, count, flags))
@@ -280,8 +275,6 @@ class MT5Service(rpyc.Service):
     def exposed_copy_ticks_range(
         self, symbol: str, date_from, date_to, flags: int
     ) -> list:
-        import datetime  # noqa: PLC0415
-
         if isinstance(date_from, (int, float)):
             date_from = datetime.datetime.fromtimestamp(date_from)
         if isinstance(date_to, (int, float)):
@@ -324,8 +317,6 @@ class MT5Service(rpyc.Service):
 
     # ── Trade history ─────────────────────────────────────────────────────────
     def exposed_history_orders_total(self, date_from, date_to) -> int:
-        import datetime  # noqa: PLC0415
-
         if isinstance(date_from, (int, float)):
             date_from = datetime.datetime.fromtimestamp(date_from)
         if isinstance(date_to, (int, float)):
@@ -340,8 +331,6 @@ class MT5Service(rpyc.Service):
         ticket: int = 0,
         position: int = 0,
     ) -> list:
-        import datetime  # noqa: PLC0415
-
         if ticket:
             result = mt5.history_orders_get(ticket=ticket)
         elif position:
@@ -358,8 +347,6 @@ class MT5Service(rpyc.Service):
         return [_to_py(o) for o in result] if result else []
 
     def exposed_history_deals_total(self, date_from, date_to) -> int:
-        import datetime  # noqa: PLC0415
-
         if isinstance(date_from, (int, float)):
             date_from = datetime.datetime.fromtimestamp(date_from)
         if isinstance(date_to, (int, float)):
@@ -374,8 +361,6 @@ class MT5Service(rpyc.Service):
         ticket: int = 0,
         position: int = 0,
     ) -> list:
-        import datetime  # noqa: PLC0415
-
         if ticket:
             result = mt5.history_deals_get(ticket=ticket)
         elif position:
