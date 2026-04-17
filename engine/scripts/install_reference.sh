@@ -42,14 +42,16 @@ echo "[install] Setting Wine to Windows 10 mode ..."
 wine reg add "HKEY_CURRENT_USER\\Software\\Wine" /v Version /t REG_SZ /d "win10" /f 2>/dev/null || true
 wineserver -w 2>/dev/null || true
 
-# ── 1c. Disable Wine decoration expectations ─────────────────────────────────
-# bspwm is a tiling WM with no title bars. By default Wine requests WM
-# decorations and reserves ~30 px for a title bar the WM never draws,
-# leaving a black gap.  Setting Decorated=N tells Wine not to expect any
-# WM-drawn decorations so the client area fills the entire window.
-echo "[install] Disabling Wine decoration expectations (Decorated=N) ..."
+# ── 1c. Disable Wine window decorations ───────────────────────────────────────
+# autotileWM handles all window positioning/sizing. Wine must not draw its own
+# title bars or window frames.
+#   Decorated=N  → don't expect WM-drawn decorations (no reserved title-bar gap)
+#   Managed=N    → don't draw Wine's internal window frame/border at all
+echo "[install] Disabling Wine decorations (Decorated=N, Managed=N) ..."
 wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" \
     /v Decorated /t REG_SZ /d "N" /f 2>/dev/null || true
+wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" \
+    /v Managed /t REG_SZ /d "N" /f 2>/dev/null || true
 wineserver -w 2>/dev/null || true
 
 # ── 2. Install MetaTrader 5 ───────────────────────────────────────────────────
