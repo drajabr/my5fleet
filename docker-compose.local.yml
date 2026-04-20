@@ -2,21 +2,21 @@ services:
 
   # Local testing stack: always build from the current workspace.
   engine:
-    image: mt5-fleet-engine:local
+    image: my5fleet-engine:local
     build:
       context: ./engine
     container_name: engine-local
     restart: unless-stopped
     environment:
-      FLEET_DIR: /mt5-fleet
-      WINEPREFIX: /mt5-fleet/wineprefix
+      FLEET_DIR: /my5fleet
+      WINEPREFIX: /my5fleet/wineprefix
       DISPLAY: ":99"
       WINEDEBUG: "-all"
       WORKER_PORT_RANGE_START: "19812"
       WORKER_PORT_RANGE_END: "19912"
     volumes:
-      - mt5-workers-local:/mt5-fleet/workers
-      - mt5-config-local:/mt5-fleet/config
+      - mt5-workers-local:/my5fleet/workers
+      - mt5-config-local:/my5fleet/config
     ports:
       - "19812-19912:19812-19912"
     networks:
@@ -24,7 +24,7 @@ services:
     shm_size: "256mb"
 
   api:
-    image: mt5-fleet-api:local
+    image: my5fleet-api:local
     build:
       context: .
       dockerfile: api/Dockerfile

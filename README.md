@@ -1,4 +1,4 @@
-# mt5-fleet
+# my5fleet
 
 Run multiple isolated MetaTrader 5 terminals inside a single Docker container, each exposed as an RPyC endpoint. A lightweight web dashboard and REST API let you add/remove workers and retrieve connection details without touching the container.
 
@@ -32,8 +32,8 @@ Persistent volumes:
 
 | Volume | Mounted at | Contains |
 |--------|-----------|----------|
-| `mt5-workers` | `/mt5-fleet/workers` | Per-worker directories (symlinks + writable dirs) |
-| `mt5-config`  | `/mt5-fleet/config`  | `workers.json` state file |
+| `mt5-workers` | `/my5fleet/workers` | Per-worker directories (symlinks + writable dirs) |
+| `mt5-config`  | `/my5fleet/config`  | `workers.json` state file |
 
 The Wine prefix, MT5 binaries, and Windows Python 3.11 are baked into the `engine` image at build time — no internet access is needed at runtime.
 
@@ -44,8 +44,8 @@ The Wine prefix, MT5 binaries, and Windows Python 3.11 are baked into the `engin
 ```bash
 # 1. Set image tags (usually GHCR latest)
 #    Example:
-#    ENGINE_IMAGE=ghcr.io/<owner>/mt5-fleet-engine:latest
-#    API_IMAGE=ghcr.io/<owner>/mt5-fleet-api:latest
+#    ENGINE_IMAGE=ghcr.io/<owner>/my5fleet-engine:latest
+#    API_IMAGE=ghcr.io/<owner>/my5fleet-api:latest
 #    or put them in .env
 
 # 2. Start
@@ -55,8 +55,8 @@ docker compose up -d
 open http://localhost:8080
 ```
 
-Then click **+ Add Worker**, fill in your MT5 credentials, and the engine will:
-1. Create an isolated worker directory under `/mt5-fleet/workers/terminal_N/`
+Then click **+ Add Terminal**, fill in your MT5 credentials, and the engine will:
+1. Create an isolated worker directory under `/my5fleet/workers/terminal_N/`
 2. Launch `terminal64.exe /portable` via Wine
 3. Start a `worker_rpyc.py` server on the next free port (starting at 18812)
 
@@ -69,10 +69,9 @@ Then click **+ Add Worker**, fill in your MT5 credentials, and the engine will:
 | `WEB_PORT` | `8080` | Host port for the dashboard |
 | `WORKER_PORT_RANGE_START` | `18812` | First RPyC port published to host |
 | `WORKER_PORT_RANGE_END` | `18912` | Last RPyC port published to host |
-| `VNC_WS_PORT_RANGE_START` | `19000` | First host port mapped to worker noVNC websocket (container 6800+) |
-| `VNC_WS_PORT_RANGE_END` | `19100` | Last host port mapped to worker noVNC websocket (container 6900) |
-| `ENGINE_IMAGE` | `ghcr.io/drajabr/mt5-fleet-engine:latest` | Engine image used by `docker-compose.yml` |
-| `API_IMAGE` | `ghcr.io/drajabr/mt5-fleet-api:latest` | API image used by `docker-compose.yml` |
+
+| `ENGINE_IMAGE` | `ghcr.io/drajabr/my5fleet-engine:latest` | Engine image used by `docker-compose.yml` |
+| `API_IMAGE` | `ghcr.io/drajabr/my5fleet-api:latest` | API image used by `docker-compose.yml` |
 
 Set them in a `.env` file at the repo root or export them before running `docker compose up`.
 
@@ -145,11 +144,11 @@ All endpoints are available through the `api` container at `http://localhost:808
 
 ---
 
-## Worker isolation
+## Terminal isolation
 
-Each worker gets its own directory under `/mt5-fleet/workers/terminal_N/`. MT5 is launched with the `/portable` flag, which means it derives its Windows named-pipe name from the EXE path. Different directories → different pipe names → fully isolated processes.
+Each worker gets its own directory under `/my5fleet/workers/terminal_N/`. MT5 is launched with the `/portable` flag, which means it derives its Windows named-pipe name from the EXE path. Different directories → different pipe names → fully isolated processes.
 
-Read-only files (the MT5 binaries) are **symlinked** back to `/mt5-fleet/reference/install/`. Only the directories that MT5 writes into are real copies:
+Read-only files (the MT5 binaries) are **symlinked** back to `/my5fleet/reference/install/`. Only the directories that MT5 writes into are real copies:
 
 ```
 MQL5/   logs/   config/   tester/   bases/   profiles/
@@ -185,7 +184,7 @@ docker compose -f docker-compose.local.yml logs -f engine
 docker exec -it engine-local bash
 
 # Check workers.json state
-docker exec engine-local cat /mt5-fleet/config/workers.json
+docker exec engine-local cat /my5fleet/config/workers.json
 ```
 
 ---
@@ -194,8 +193,8 @@ docker exec engine-local cat /mt5-fleet/config/workers.json
 
 GitHub Actions workflow `.github/workflows/docker-images.yml` builds and pushes:
 
-- `ghcr.io/<owner>/mt5-fleet-engine`
-- `ghcr.io/<owner>/mt5-fleet-api`
+- `ghcr.io/<owner>/my5fleet-engine`
+- `ghcr.io/<owner>/my5fleet-api`
 
 Published tags:
 

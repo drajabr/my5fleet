@@ -8,7 +8,7 @@ MetaTrader5 package is a Win32 extension that communicates with the terminal
 over Windows named pipes:
 
     wine C:\\Python311\\python.exe Z:\\opt\\mt5\\scripts\\worker_rpyc.py \
-        --port 18812 --token <token> --mt5-path Z:\\mt5-fleet\\workers\\terminal_1\\terminal64.exe
+        --port 18812 --token <token> --mt5-path Z:\\my5fleet\\workers\\terminal_1\\terminal64.exe
 
 The /portable flag passed when launching the terminal means MT5 derives its
 IPC pipe name from the terminal's absolute path, so each worker directory
@@ -35,6 +35,7 @@ import logging
 import os
 import sys
 import time
+import threading
 
 # ── pythonw.exe guard ─────────────────────────────────────────────────────────
 # When launched via `wine pythonw.exe` (GUI subsystem — no console), Python
@@ -54,6 +55,14 @@ logging.basicConfig(
 log = logging.getLogger("worker_rpyc")
 
 
+class AuthClientDisconnected(Exception):
+    """Raised when a client drops before sending an auth token."""
+
+
+class AuthRejected(Exception):
+    """Raised when token auth fails in expected ways."""
+
+
 # ── Argument parsing ──────────────────────────────────────────────────────────
 def _parse_args():
     p = argparse.ArgumentParser(
@@ -65,7 +74,7 @@ def _parse_args():
         "--mt5-path",
         required=True,
         help="Windows path to this worker's terminal64.exe, "
-        r"e.g. Z:\mt5-fleet\workers\terminal_1\terminal64.exe",
+        r"e.g. Z:\my5fleet\workers\terminal_1\terminal64.exe",
     )
     p.add_argument(
         "--init-retries",
@@ -80,9 +89,33 @@ def _parse_args():
         help="Seconds between mt5.initialize() retries (default 5.0)",
     )
     p.add_argument(
+        "--init-timeout-ms",
+        type=int,
+        default=60000,
+        help="Timeout per mt5.initialize() call in milliseconds (default 60000)",
+    )
+    p.add_argument(
+        "--init-start-delay",
+        type=float,
+        default=20.0,
+        help="Seconds to wait before first background mt5.initialize() attempt (default 20.0)",
+    )
+    p.add_argument(
         "--log-file",
         default="",
         help="Path to the log file (used when running under pythonw.exe with no console)",
+    )
+    p.add_argument(
+        "--portable",
+        action="store_true",
+        default=True,
+        help="Use MT5 portable mode during initialize() (default: enabled)",
+    )
+    p.add_argument(
+        "--no-portable",
+        dest="portable",
+        action="store_false",
+        help="Disable MT5 portable mode during initialize()",
     )
     return p.parse_args()
 
@@ -123,17 +156,17 @@ def _make_authenticator(expected_token: str):
         while True:
             byte = sock.recv(1)
             if not byte:
-                raise Exception("Connection closed during authentication")
+                raise AuthClientDisconnected("Connection closed during authentication")
             if byte == b"\n":
                 break
             if len(buf) >= 256:
                 sock.close()
-                raise Exception("Token exceeds maximum length")
+                raise AuthRejected("Token exceeds maximum length")
             buf.extend(byte)
         received = bytes(buf).rstrip(b"\r")
         if not hmac.compare_digest(received, expected):
             sock.close()
-            raise Exception("Authentication failed: invalid token")
+            raise AuthRejected("Authentication failed: invalid token")
         return sock, None
 
     return authenticator
@@ -145,6 +178,20 @@ import rpyc  # noqa: E402
 from rpyc.utils.server import ThreadedServer  # noqa: E402
 
 
+class QuietThreadedServer(ThreadedServer):
+    """ThreadedServer variant that suppresses expected auth disconnect noise."""
+
+    def _authenticate_and_serve_client(self, sock):
+        try:
+            return super()._authenticate_and_serve_client(sock)
+        except AuthClientDisconnected:
+            # Health probes or aborted connects can drop before sending a token.
+            return
+        except AuthRejected as exc:
+            log.warning("Rejected client during authentication: %s", exc)
+            return
+
+
 class MT5Service(rpyc.Service):
     """Exposes the MetaTrader5 Python API over RPyC.
 
@@ -154,6 +201,7 @@ class MT5Service(rpyc.Service):
 
     # Set at startup by main()
     _mt5_path: str = ""
+    _portable: bool = True
     _init_retries: int = 12
     _init_delay: float = 5.0
 
@@ -173,12 +221,14 @@ class MT5Service(rpyc.Service):
         password: str = "",
         server: str = "",
         timeout: int = 60000,
-        portable: bool = False,
+        portable=None,
     ) -> bool:
         """Connect mt5 Python library to the running terminal.
 
         Call with no arguments to auto-connect using this worker's terminal path.
         """
+        if portable is None:
+            portable = self._portable
         kwargs: dict = {"timeout": timeout, "portable": portable}
         if path:
             kwargs["path"] = path
@@ -417,37 +467,55 @@ def main():
 
     # Store config on the class (shared across all service instances)
     MT5Service._mt5_path = args.mt5_path
+    MT5Service._portable = args.portable
     MT5Service._init_retries = args.init_retries
     MT5Service._init_delay = args.init_delay
 
-    # Attempt to pre-initialise MT5 with retries so we fail fast if the
-    # terminal never starts instead of silently serving a broken connection.
-    log.info("Attempting to initialise MT5 at path: %s", args.mt5_path)
-    initialized = False
-    for attempt in range(1, args.init_retries + 1):
-        ok = mt5.initialize(path=args.mt5_path)
-        if ok:
-            log.info("MT5 initialised successfully on attempt %d", attempt)
-            initialized = True
-            break
-        err = mt5.last_error()
-        log.warning(
-            "MT5 init attempt %d/%d failed: %s", attempt, args.init_retries, err
-        )
-        if attempt < args.init_retries:
-            time.sleep(args.init_delay)
+    # Start the RPyC server immediately. MT5 init can take a long time when the
+    # terminal updates/restarts on first launch; blocking here causes startup
+    # readiness timeouts and workers to appear as failed.
+    def _background_preinit() -> None:
+        if args.init_start_delay > 0:
+            log.info("Waiting %.1fs before first MT5 init attempt", args.init_start_delay)
+            time.sleep(args.init_start_delay)
 
-    if not initialized:
+        log.info("Attempting to initialise MT5 at path: %s", args.mt5_path)
+        for attempt in range(1, args.init_retries + 1):
+            # Ensure previous partial sessions don't poison subsequent retries.
+            try:
+                mt5.shutdown()
+            except Exception:  # pragma: no cover - defensive cleanup only
+                pass
+
+            # Worker terminals are launched with /portable, so the MT5 Python
+            # bridge must also initialize in portable mode to target the same
+            # IPC endpoint.
+            ok = mt5.initialize(
+                path=args.mt5_path,
+                timeout=args.init_timeout_ms,
+                portable=args.portable,
+            )
+            if ok:
+                log.info("MT5 initialised successfully on attempt %d", attempt)
+                return
+            err = mt5.last_error()
+            err_code = err[0] if isinstance(err, (list, tuple)) and err else None
+            level = logging.INFO if err_code == -10005 else logging.WARNING
+            log.log(level, "MT5 init attempt %d/%d failed: %s", attempt, args.init_retries, err)
+            if attempt < args.init_retries:
+                sleep_s = args.init_delay * min(attempt, 4)
+                time.sleep(sleep_s)
         log.error(
             "MT5 could not be initialised after %d attempts. "
-            "The RPyC server will still start so clients can retry "
-            "via exposed_initialize().",
+            "Clients can retry via exposed_initialize().",
             args.init_retries,
         )
 
+    threading.Thread(target=_background_preinit, daemon=True).start()
+
     authenticator = _make_authenticator(args.token)
 
-    server = ThreadedServer(
+    server = QuietThreadedServer(
         MT5Service,
         port=args.port,
         hostname="0.0.0.0",

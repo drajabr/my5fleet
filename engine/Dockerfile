@@ -6,15 +6,6 @@ COPY control_api/*.go .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-w -s" -trimpath -o control-api .
 
-# ── Stage 1b: build the tiling window manager ─────────────────────────────────
-FROM golang:1.22-alpine AS tilewm-builder
-WORKDIR /build
-COPY tilewm/go.mod tilewm/go.sum ./
-RUN go mod download
-COPY tilewm/*.go .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-w -s" -trimpath -o autotilewm .
-
 # ── Stage 2: Wine + Xvfb runtime (Debian + WineHQ stable) ────────────────────
 FROM debian:bookworm-slim
 
@@ -25,7 +16,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         wget gnupg2 ca-certificates \
         xvfb x11-utils tigervnc-standalone-server \
-        supervisor procps unzip python3 python3-pip bash \
+        supervisor procps unzip python3 python3-pip bash twm \
+        xfonts-base xfonts-75dpi \
     && mkdir -pm755 /etc/apt/keyrings \
     && wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
     && wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
@@ -38,9 +30,9 @@ RUN apt-get update \
 
 # ── Directory layout ──────────────────────────────────────────────────────────
 RUN mkdir -p \
-        /mt5-fleet/workers \
-        /mt5-fleet/reference \
-        /mt5-fleet/config \
+        /my5fleet/workers \
+        /my5fleet/reference \
+        /my5fleet/config \
         /var/log/supervisor
 
 # ── Bake MT5 + Python + packages into the image at build time ─────────────────
@@ -48,8 +40,8 @@ RUN mkdir -p \
 # does NOT bust this expensive cache layer (~10-15 min, ~1.5 GB result).
 COPY scripts/install_reference.sh /opt/mt5/scripts/install_reference.sh
 RUN chmod +x /opt/mt5/scripts/install_reference.sh \
-    && FLEET_DIR=/mt5-fleet \
-       WINEPREFIX=/mt5-fleet/wineprefix \
+    && FLEET_DIR=/my5fleet \
+       WINEPREFIX=/my5fleet/wineprefix \
        DISPLAY=:99 \
        WINEDEBUG=-all \
        /opt/mt5/scripts/install_reference.sh
@@ -57,7 +49,6 @@ RUN chmod +x /opt/mt5/scripts/install_reference.sh \
 # ── Control API binary (from builder) ─────────────────────────────────────────
 RUN mkdir -p /opt/mt5/control_api
 COPY --from=go-builder /build/control-api /opt/mt5/control_api/server
-COPY --from=tilewm-builder /build/autotilewm /usr/local/bin/autotilewm
 
 # ── Remaining scripts ─────────────────────────────────────────────────────────
 COPY scripts/ /opt/mt5/scripts/

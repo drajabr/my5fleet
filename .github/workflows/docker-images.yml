@@ -14,8 +14,8 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_ENGINE: ${{ github.repository_owner }}/mt5-fleet-engine
-  IMAGE_API: ${{ github.repository_owner }}/mt5-fleet-api
+  IMAGE_ENGINE: ${{ github.repository_owner }}/my5fleet-engine
+  IMAGE_API: ${{ github.repository_owner }}/my5fleet-api
 
 jobs:
   docker:
@@ -25,11 +25,11 @@ jobs:
       matrix:
         include:
           - name: engine
-            image: ${{ github.repository_owner }}/mt5-fleet-engine
+            image: ${{ github.repository_owner }}/my5fleet-engine
             context: ./engine
             file: ./engine/Dockerfile
           - name: api
-            image: ${{ github.repository_owner }}/mt5-fleet-api
+            image: ${{ github.repository_owner }}/my5fleet-api
             context: .
             file: ./api/Dockerfile
 

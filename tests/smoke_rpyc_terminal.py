@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end smoke test for mt5-fleet worker + RPyC connectivity.
+"""End-to-end smoke test for my5fleet worker + RPyC connectivity.
 
 Flow:
 1) Create a worker through /api/workers
@@ -26,7 +26,7 @@ import rpyc
 
 
 @dataclass
-class Worker:
+class Terminal:
     id: str
     name: str
     port: int
@@ -58,7 +58,7 @@ def _http_json(
         raise RuntimeError(f"HTTP {exc.code} {method} {url}: {raw}") from exc
 
 
-def create_worker(api_base: str, name: str, token: str) -> Worker:
+def create_worker(api_base: str, name: str, token: str) -> Terminal:
     code, payload = _http_json(
         "POST",
         f"{api_base}/workers",
@@ -67,7 +67,7 @@ def create_worker(api_base: str, name: str, token: str) -> Worker:
     )
     if code != 201:
         raise RuntimeError(f"create worker failed: expected 201 got {code} payload={payload}")
-    return Worker(
+    return Terminal(
         id=payload["id"],
         name=payload.get("name", payload["id"]),
         port=int(payload["port"]),
@@ -82,11 +82,11 @@ def start_worker(api_base: str, worker_id: str) -> None:
         raise RuntimeError(f"start worker failed: expected 200 got {code} payload={payload}")
 
 
-def get_worker(api_base: str, worker_id: str) -> Worker:
+def get_worker(api_base: str, worker_id: str) -> Terminal:
     code, payload = _http_json("GET", f"{api_base}/workers/{worker_id}")
     if code != 200:
         raise RuntimeError(f"get worker failed: expected 200 got {code} payload={payload}")
-    return Worker(
+    return Terminal(
         id=payload["id"],
         name=payload.get("name", payload["id"]),
         port=int(payload["port"]),
@@ -95,9 +95,9 @@ def get_worker(api_base: str, worker_id: str) -> Worker:
     )
 
 
-def wait_running(api_base: str, worker_id: str, timeout_s: int = 180) -> Worker:
+def wait_running(api_base: str, worker_id: str, timeout_s: int = 180) -> Terminal:
     deadline = time.time() + timeout_s
-    last: Worker | None = None
+    last: Terminal | None = None
     while time.time() < deadline:
         last = get_worker(api_base, worker_id)
         if last.status == "running":
@@ -170,7 +170,7 @@ def main() -> int:
 
     worker_name = f"smoke-{int(time.time())}"
     token = secrets.token_urlsafe(24)
-    worker: Worker | None = None
+    worker: Terminal | None = None
 
     print(f"[1/5] Creating worker {worker_name}...")
     worker = create_worker(args.api_base, worker_name, token)

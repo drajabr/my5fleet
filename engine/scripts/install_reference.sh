@@ -3,7 +3,7 @@
 # Runs at Docker build time. Starts its own Xvfb for the build.
 set -euo pipefail
 
-export FLEET_DIR="${FLEET_DIR:-/mt5-fleet}"
+export FLEET_DIR="${FLEET_DIR:-/my5fleet}"
 export WINEPREFIX="${WINEPREFIX:-$FLEET_DIR/wineprefix}"
 export WINEDEBUG="-all"
 export DISPLAY="${DISPLAY:-:99}"
@@ -42,16 +42,12 @@ echo "[install] Setting Wine to Windows 10 mode ..."
 wine reg add "HKEY_CURRENT_USER\\Software\\Wine" /v Version /t REG_SZ /d "win10" /f 2>/dev/null || true
 wineserver -w 2>/dev/null || true
 
-# ── 1c. Disable Wine window decorations ───────────────────────────────────────
-# autotileWM handles all window positioning/sizing. Wine must not draw its own
-# title bars or window frames.
-#   Decorated=N  → don't expect WM-drawn decorations (no reserved title-bar gap)
-#   Managed=N    → don't draw Wine's internal window frame/border at all
-echo "[install] Disabling Wine decorations (Decorated=N, Managed=N) ..."
+# ── 1c. Let WM manage Wine windows ────────────────────────────────────────────
+# Keep Wine windows WM-managed so the window manager controls placement,
+# resizing and decorations policy.
+echo "[install] Configuring Wine X11 driver (Managed=Y) ..."
 wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" \
-    /v Decorated /t REG_SZ /d "N" /f 2>/dev/null || true
-wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" \
-    /v Managed /t REG_SZ /d "N" /f 2>/dev/null || true
+    /v Managed /t REG_SZ /d "Y" /f 2>/dev/null || true
 wineserver -w 2>/dev/null || true
 
 # ── 2. Install MetaTrader 5 ───────────────────────────────────────────────────
@@ -110,7 +106,7 @@ sleep 2
 echo "[install] MT5 installed at: $MT5_WIN_PATH"
 
 # Copy binaries to our reference location so they are never under the wineprefix
-# (which is shared state). Workers symlink back into here.
+# (which is shared state). Terminals symlink back into here.
 echo "[install] Copying MT5 binaries to reference directory ..."
 mkdir -p "$REFERENCE_DIR"
 cp -r "$MT5_WIN_PATH/." "$REFERENCE_DIR/"

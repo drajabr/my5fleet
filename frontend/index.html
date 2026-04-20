@@ -3,7 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>mt5-fleet</title>
+  <title>my5fleet</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" />
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
@@ -31,9 +34,7 @@
             <div class="quick-control-item">
               <button class="icon-btn icon-btn--square icon-btn--theme-dot" id="accentCycleBtn" type="button" title="Select accent color" aria-label="Select accent color"></button>
             </div>
-            <div class="quick-control-item">
-              <button class="icon-btn icon-btn--square" id="themeToggleBtn" type="button" title="Select light or dark theme" aria-label="Select light or dark theme">&#127769;</button>
-            </div>
+
             <div class="quick-control-item">
               <button class="icon-btn icon-btn--square" id="fontCycleBtn" type="button" title="Select font" aria-label="Select font">B</button>
             </div>
@@ -51,11 +52,11 @@
       <span class="metric-chip" id="metric-mem" title="System memory usage">RAM <b>—</b></span>
       <span class="metric-chip" id="metric-disk" title="Disk usage">Disk <b>—</b></span>
     </div>
-    <!-- Worker list -->
+    <!-- Terminal list -->
     <ul id="worker-list"></ul>
     <!-- Add worker button at bottom -->
     <div class="sidebar-footer">
-      <button class="btn btn-primary" id="add-btn" type="button" title="Add Worker" aria-label="Add Worker" onclick="startAddWorker()"><span id="add-btn-icon"></span> Add Worker</button>
+      <button class="btn btn-primary" id="add-btn" type="button" title="Add Terminal" aria-label="Add Terminal" onclick="startAddTerminal()"><span id="add-btn-icon"></span> Add Terminal</button>
     </div>
   </aside>
   <div id="sidebar-resizer" class="resizer resizer-x" title="Drag to resize sidebar"></div>
@@ -70,7 +71,7 @@
     <div id="log-panel">
       <div class="log-tab-bar" id="log-tab-bar">
         <button class="log-tab active" id="log-tab-system" type="button" onclick="switchLogTab('system')">System</button>
-        <button class="log-tab" id="log-tab-worker" type="button" onclick="switchLogTab('worker')">Worker</button>
+        <button class="log-tab" id="log-tab-worker" type="button" onclick="switchLogTab('worker')">Terminal</button>
       </div>
       <div id="log-content">
         <div id="log-lines"><div class="log-line muted">Waiting for engine…</div></div>
@@ -90,7 +91,7 @@ const BACKGROUND_KEY = 'fleetBackgroundPreference';
 const FONT_KEY = 'fleetFontPreference';
 const FONT_SIZE_KEY = 'fleetFontSizePreference';
 const QUICK_CONTROLS_COLLAPSED_KEY = 'fleetQuickControlsCollapsed';
-const SELECTED_KEY = 'fleetSelectedWorker';
+const SELECTED_KEY = 'fleetSelectedTerminal';
 const SIDEBAR_W_KEY = 'fleetSidebarWidth';
 const LOG_H_KEY = 'fleetLogHeight';
 const LOG_TAB_KEY = 'fleetLogTab';
@@ -100,7 +101,7 @@ let _workers = [];
 let _metrics = null;     // system + per-worker metrics
 let _metricsTimer = null;
 let _editingId = null;   // null = not editing, string = editing worker id
-let _addingWorker = false; // true when inline add form is shown
+let _addingTerminal = false; // true when inline add form is shown
 let _selectedId = localStorage.getItem(SELECTED_KEY) || null;
 let _pollTimer = null;
 let _logTimer = null;
@@ -116,47 +117,41 @@ let _workerRfb = null;
 let _workerRetryTimer = null;
 let _rfbClassPromise = null;
 let _status = null;
+let _selectedWorkerStatus = null;
 let _activeQuickPicker = null;
 let _installerRfb = null;
 let _activeLogTab = localStorage.getItem(LOG_TAB_KEY) || 'system';
 
 const ACCENT_PRESETS = [
-  { key: 'steel',   accent: '#5c6bc0', accentHl: '#7986cb', rgb: '92,107,192' },
-  { key: 'emerald', accent: '#2f8f62', accentHl: '#59bd87', rgb: '47,143,98' },
-  { key: 'ember',   accent: '#b56b2d', accentHl: '#dfa15c', rgb: '181,107,45' },
-  { key: 'ink',     accent: '#2d7bb5', accentHl: '#67aee0', rgb: '45,123,181' },
-  { key: 'teal',    accent: '#2b8f8e', accentHl: '#58c8c7', rgb: '43,143,142' },
-  { key: 'mint',    accent: '#2ea680', accentHl: '#66d9b3', rgb: '46,166,128' },
-  { key: 'gold',    accent: '#b0882a', accentHl: '#e5bd5d', rgb: '176,136,42' },
-  { key: 'rose',    accent: '#b5456b', accentHl: '#e07090', rgb: '181,69,107' },
-  { key: 'violet',  accent: '#8b5cf6', accentHl: '#a78bfa', rgb: '139,92,246' },
-  { key: 'coral',   accent: '#e0705c', accentHl: '#f09080', rgb: '224,112,92' },
+  { key: 'cobalt',  dark: { accent: '#5f7dff', accentHl: '#9bb0ff', rgb: '95,125,255' },  light: { accent: '#2f4fd1', accentHl: '#203ca3', rgb: '47,79,209' } },
+  { key: 'emerald', dark: { accent: '#2ea86f', accentHl: '#6bd8a0', rgb: '46,168,111' },  light: { accent: '#1f8254', accentHl: '#166742', rgb: '31,130,84' } },
+  { key: 'amber',   dark: { accent: '#c98a1d', accentHl: '#eab45c', rgb: '201,138,29' },  light: { accent: '#9f6710', accentHl: '#7c500d', rgb: '159,103,16' } },
+  { key: 'azure',   dark: { accent: '#2d8ad6', accentHl: '#6cb7ef', rgb: '45,138,214' },  light: { accent: '#1f6faa', accentHl: '#185785', rgb: '31,111,170' } },
+  { key: 'teal',    dark: { accent: '#2f9e9a', accentHl: '#69d6d1', rgb: '47,158,154' },  light: { accent: '#1f7a77', accentHl: '#185f5d', rgb: '31,122,119' } },
+  { key: 'rose',    dark: { accent: '#c94d7f', accentHl: '#ec88ae', rgb: '201,77,127' },  light: { accent: '#9e2f5f', accentHl: '#7d254b', rgb: '158,47,95' } },
+  { key: 'violet',  dark: { accent: '#8b63f6', accentHl: '#b39bfb', rgb: '139,99,246' },  light: { accent: '#6540c7', accentHl: '#4f329d', rgb: '101,64,199' } },
+  { key: 'crimson', dark: { accent: '#d35252', accentHl: '#f08f8f', rgb: '211,82,82' },   light: { accent: '#a33636', accentHl: '#812a2a', rgb: '163,54,54' } },
 ];
 
 const BACKGROUND_PRESETS = [
-  { key: 'charcoal', label: '⬛', bg: '#101417', surface: '#171c22', panel: '#0e1216', border: '#2a3140', text: '#e3e8f0', muted: '#8a95a8', tintRgb: '100,120,160' },
-  { key: 'onyx',     label: '⚫', bg: '#111111', surface: '#1a1a1a', panel: '#0e0e0e', border: '#2e2e2e', text: '#e4e4e4', muted: '#8a8a8a', tintRgb: '128,128,128' },
-  { key: 'graphite', label: '🔘', bg: '#151618', surface: '#1e2023', panel: '#121315', border: '#35373d', text: '#e3e4e8', muted: '#8d8f98', tintRgb: '130,140,160' },
-  { key: 'steel',    label: '🩶', bg: '#12161b', surface: '#1a2028', panel: '#10141a', border: '#2c3544', text: '#dfe6f0', muted: '#8898ac', tintRgb: '90,115,150' },
-  { key: 'ash',      label: '🪨', bg: '#141517', surface: '#1c1d20', panel: '#111213', border: '#333538', text: '#e0e1e4', muted: '#909298', tintRgb: '120,125,140' },
-  { key: 'obsidian', label: '🌑', bg: '#0b0d10', surface: '#131620', panel: '#090b0e', border: '#242838', text: '#e0e4f0', muted: '#8890a8', tintRgb: '80,95,135' },
-  { key: 'slate',    label: '🩵', bg: '#10151c', surface: '#18212c', panel: '#0e141c', border: '#2e3d50', text: '#e4ecf4', muted: '#8ea1b5', tintRgb: '65,110,170' },
-  { key: 'midnight', label: '🌃', bg: '#0d0d1a', surface: '#16162a', panel: '#0b0b1e', border: '#2a2a45', text: '#e0e0f0', muted: '#8888aa', tintRgb: '92,107,192' },
+  { key: 'black',   theme: 'dark',  bg: '#000000', surface: '#0c0c0c', panel: '#000000', border: '#1c1c1c', text: '#d9d9d9', muted: '#9b9b9b', swatch: '#0c0c0c' },
+  { key: 'dark',    theme: 'dark',  bg: '#111318', surface: '#191d24', panel: '#0d0f14', border: '#2b3040', text: '#e2e6ef', muted: '#9da8bd', swatch: '#191d24' },
+  { key: 'dim',     theme: 'dark',  bg: '#1e2024', surface: '#282a2e', panel: '#18191d', border: '#3e4048', text: '#e0e3ea', muted: '#a8adb7', swatch: '#282a2e' },
+  { key: 'gray',    theme: 'dark',  bg: '#343638', surface: '#404244', panel: '#2c2e30', border: '#58585a', text: '#ebebed', muted: '#c1c1c6', swatch: '#404244' },
+  { key: 'silver',  theme: 'light', bg: '#b0b4ba', surface: '#bcc0c6', panel: '#a4a8ae', border: '#9498a0', text: '#111319', muted: '#343845', swatch: '#bcc0c6' },
+  { key: 'light',   theme: 'light', bg: '#e4e5e8', surface: '#edeef0', panel: '#dadbe0', border: '#c0c2c8', text: '#171a22', muted: '#474d5d', swatch: '#edeef0' },
+  { key: 'white',   theme: 'light', bg: '#f5f5f7', surface: '#ffffff', panel: '#ebebed', border: '#d2d2d6', text: '#15171c', muted: '#4f5462', swatch: '#ffffff' },
 ];
 
 const FONT_PRESETS = [
-  { key: 'manrope', label: 'M', family: "'Manrope', 'Inter', Arial, sans-serif" },
-  { key: 'sora', label: 'R', family: "'Sora', 'Inter', Arial, sans-serif" },
-  { key: 'inter', label: 'I', family: "'Inter', Arial, sans-serif" },
-  { key: 'dm-sans', label: 'D', family: "'DM Sans', 'Inter', Arial, sans-serif" },
-  { key: 'jetbrains', label: 'J', family: "'JetBrains Mono', 'Fira Code', monospace" },
-  { key: 'fira-code', label: 'F', family: "'Fira Code', 'JetBrains Mono', monospace" },
-  { key: 'bahnschrift', label: 'B', family: "'Bahnschrift', 'Barlow Condensed', Arial, sans-serif" },
-  { key: 'arial', label: 'A', family: "Arial, sans-serif" },
-  { key: 'verdana', label: 'V', family: "Verdana, Arial, sans-serif" },
-  { key: 'courier', label: 'C', family: "'Courier New', Courier, monospace" },
+  { key: 'inter', label: 'I', family: "'Inter', 'Segoe UI', Arial, sans-serif" },
+  { key: 'manrope', label: 'M', family: "'Manrope', 'Segoe UI', Arial, sans-serif" },
+  { key: 'sora', label: 'S', family: "'Sora', 'Segoe UI', Arial, sans-serif" },
+  { key: 'system', label: 'U', family: "system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" },
+  { key: 'segoe', label: 'W', family: "'Segoe UI', Tahoma, Arial, sans-serif" },
+  { key: 'arial', label: 'A', family: "Arial, Helvetica, sans-serif" },
+  { key: 'jetbrains', label: 'J', family: "'JetBrains Mono', 'Consolas', 'Courier New', monospace" },
   { key: 'georgia', label: 'G', family: "Georgia, 'Times New Roman', serif" },
-  { key: 'times', label: 'T', family: "'Times New Roman', Times, serif" },
 ];
 
 const FONT_SIZE_PRESETS = [
@@ -185,13 +180,17 @@ function icon(name) {
   return ICONS[name] || '';
 }
 
-function getDisplayWorkers() {
-  const regular = [..._workers].sort((a, b) => (a.port || 0) - (b.port || 0));
+function getDisplayTerminals() {
+  const regular = [..._workers].sort((a, b) => {
+    const portDiff = (a.port || 0) - (b.port || 0);
+    if (portDiff !== 0) return portDiff;
+    return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+  });
   return regular;
 }
 
-function getWorkerById(id) {
-  return getDisplayWorkers().find(w => w.id === id) || null;
+function getTerminalById(id) {
+  return getDisplayTerminals().find(w => w.id === id) || null;
 }
 
 async function getRFBClass() {
@@ -205,35 +204,78 @@ function _clearRetryTimers() {
   if (_workerRetryTimer) { clearTimeout(_workerRetryTimer); _workerRetryTimer = null; }
 }
 
-function disconnectWorkerVNC() {
+function disconnectTerminalVNC() {
   if (_workerRetryTimer) { clearTimeout(_workerRetryTimer); _workerRetryTimer = null; }
   _workerRfb = null;
+  _workerVncId = null;
 }
 
 // Trigger noVNC to recalculate its scaling to match the container size.
 function _fitAllVnc() {
-  // iframe-based VNC — nothing to do here
+  const workerIframe = document.getElementById('vnc-iframe-worker');
+  const installerIframe = document.getElementById('vnc-iframe-installer');
+  [workerIframe, installerIframe].forEach((frame) => {
+    if (!frame || !frame.contentWindow) return;
+    try {
+      frame.contentWindow.dispatchEvent(new Event('resize'));
+    } catch (_) {}
+  });
 }
 
-async function connectWorkerVNC(workerId) {
+async function connectTerminalVNC(workerId) {
   if (!workerId) return;
   const target = document.getElementById('vnc-screen');
   if (!target) return;
 
-  disconnectWorkerVNC();
+  disconnectTerminalVNC();
   _workerVncId = workerId;
   target.innerHTML = '';
 
   const encrypt = location.protocol === 'https:';
   const wsPath = `/api/vnc/workers/${workerId}`;
-  const src = `/noVNC/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=3000&path=${encodeURIComponent(wsPath)}&encrypt=${encrypt}`;
+  const src = `/noVNC/vnc.html?autoconnect=true&resize=remote&reconnect=true&reconnect_delay=1500&path=${encodeURIComponent(wsPath)}&encrypt=${encrypt}`;
   const iframe = document.createElement('iframe');
   iframe.id = 'vnc-iframe-worker';
   iframe.src = src;
   iframe.style.cssText = 'width:100%;height:100%;border:none;display:block;background:#000';
   iframe.allow = 'clipboard-read; clipboard-write';
+  iframe.addEventListener('load', _fitAllVnc, { once: true });
   target.appendChild(iframe);
-  _workerRfb = iframe; // keep reference for cleanup
+  _workerRfb = iframe;
+}
+
+function syncSelectedTerminalView() {
+  const screen = document.getElementById('vnc-screen');
+  const placeholder = document.getElementById('vnc-placeholder');
+  if (!screen || !placeholder) return;
+
+  const w = _selectedId ? getTerminalById(_selectedId) : null;
+  if (!w) {
+    disconnectTerminalVNC();
+    _selectedWorkerStatus = null;
+    screen.innerHTML = '';
+    placeholder.style.display = 'flex';
+    return;
+  }
+
+  if (w.status !== 'running') {
+    _selectedWorkerStatus = w.status;
+    disconnectTerminalVNC();
+    screen.innerHTML = '';
+    placeholder.style.display = 'flex';
+    return;
+  }
+
+  const needsConnect =
+    _workerVncId !== w.id ||
+    _selectedWorkerStatus !== 'running' ||
+    !document.getElementById('vnc-iframe-worker');
+
+  _selectedWorkerStatus = 'running';
+  placeholder.style.display = 'none';
+  if (needsConnect) {
+    connectTerminalVNC(w.id);
+  }
 }
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -253,30 +295,31 @@ async function api(method, path, body) {
 }
 
 // ── Poll loop ─────────────────────────────────────────────────────────────────
-async function fetchWorkers() {
+async function fetchTerminals() {
   try {
     _status = await api('GET', 'status');
     _workers = await api('GET', 'workers');
-    const displayWorkers = getDisplayWorkers();
-    const hasSelected = !!_selectedId && displayWorkers.some(w => w.id === _selectedId);
-    if (!hasSelected && displayWorkers.length) {
-      selectWorker(displayWorkers[0].id);
+    const displayTerminals = getDisplayTerminals();
+    const hasSelected = !!_selectedId && displayTerminals.some(w => w.id === _selectedId);
+    if (!hasSelected && displayTerminals.length) {
+      selectTerminal(displayTerminals[0].id);
       return;
     }
-    if (!hasSelected && !displayWorkers.length) {
+    if (!hasSelected && !displayTerminals.length) {
       _selectedId = null;
       localStorage.removeItem(SELECTED_KEY);
       startEngineLogs();
     }
     renderList();
+    syncSelectedTerminalView();
   } catch (e) {
     console.error('Fetch workers failed:', e);
   }
 }
 
 function startPolling() {
-  fetchWorkers();
-  _pollTimer = setInterval(fetchWorkers, 5000);
+  fetchTerminals();
+  _pollTimer = setInterval(fetchTerminals, 2000);
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
@@ -290,24 +333,24 @@ const STATUS_COLOR = {
 
 function renderList() {
   const list = document.getElementById('worker-list');
-  const displayWorkers = getDisplayWorkers();
-  const sig = _selectedId + '|' + _addingWorker + '|' + _editingId + '|' + JSON.stringify(displayWorkers.map(w => [w.id, w.name, w.status, w.port, w.config]));
+  const displayTerminals = getDisplayTerminals();
+  const sig = _selectedId + '|' + _addingTerminal + '|' + _editingId + '|' + JSON.stringify(displayTerminals.map(w => [w.id, w.name, w.status, w.port, w.config]));
   if (sig === _lastRenderSig) return;
   _lastRenderSig = sig;
   let html = '';
-  if (!displayWorkers.length && !_addingWorker) {
+  if (!displayTerminals.length && !_addingTerminal) {
     html = `<li class="list-empty">No workers yet.</li>`;
   } else {
-    html += displayWorkers.map(w => {
+    html += displayTerminals.map(w => {
       if (_editingId === w.id) return renderInlineEditForm(w);
       return renderRow(w);
     }).join('');
   }
-  if (_addingWorker) {
+  if (_addingTerminal) {
     html += renderInlineAddForm();
   }
   list.innerHTML = html;
-  if (_addingWorker) {
+  if (_addingTerminal) {
     const formEl = document.getElementById('inline-add-form');
     if (formEl) formEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
@@ -316,7 +359,7 @@ function renderList() {
 function nextDefaultName() {
   const existing = _workers.map(w => w.name);
   for (let i = 1; ; i++) {
-    const name = `Worker ${i}`;
+    const name = `Terminal ${i}`;
     if (!existing.includes(name)) return name;
   }
 }
@@ -356,9 +399,9 @@ function renderInlineEditForm(w) {
 
 let _pendingToken = '';
 
-function startAddWorker() {
-  if (_addInFlight || _addingWorker) return;
-  _addingWorker = true;
+function startAddTerminal() {
+  if (_addInFlight || _addingTerminal) return;
+  _addingTerminal = true;
   _editingId = null;
   _pendingToken = generateToken();
   _lastRenderSig = '';
@@ -367,14 +410,14 @@ function startAddWorker() {
 }
 
 function cancelAdd() {
-  _addingWorker = false;
+  _addingTerminal = false;
   _pendingToken = '';
   _lastRenderSig = '';
   renderList();
 }
 
 let _addInFlight = false;
-async function confirmAdd() {
+function confirmAdd() {
   if (_addInFlight) return;
   const nameEl = document.getElementById('inline-add-name');
   const tokenEl = document.getElementById('inline-add-token');
@@ -387,11 +430,11 @@ async function confirmAdd() {
   if (addBtn) addBtn.disabled = true;
   api('POST', 'workers', { token, ...(name ? { name } : {}) })
     .then(() => {
-      toast('Worker created.');
-      _addingWorker = false;
+      toast('Terminal created.');
+      _addingTerminal = false;
       _pendingToken = '';
       _lastRenderSig = '';
-      fetchWorkers();
+      fetchTerminals().catch(err => console.warn('fetchTerminals after create failed:', err));
       switchLogTab('system');
     })
     .catch(e => {
@@ -406,7 +449,7 @@ async function confirmAdd() {
 
 function startEdit(id) {
   _editingId = id;
-  _addingWorker = false;
+  _addingTerminal = false;
   _lastRenderSig = '';
   renderList();
   setTimeout(() => { const el = document.getElementById('inline-edit-name'); if (el) el.focus(); }, 50);
@@ -423,10 +466,10 @@ async function confirmEdit(id) {
   const name = nameEl?.value.trim() || '';
   try {
     await api('PATCH', `workers/${id}/name`, { name });
-    toast('Worker renamed.');
+    toast('Terminal renamed.');
     _editingId = null;
     _lastRenderSig = '';
-    fetchWorkers();
+    fetchTerminals();
     switchLogTab('system');
   } catch (e) { toast(e.message, true); }
 }
@@ -447,16 +490,19 @@ function renderRow(w) {
   const isBusy    = w.status === 'starting' || w.status === 'stopping';
   const isSelected = w.id === _selectedId;
   const displayName = w.name.length > 30 ? w.name.substring(0, 30) : w.name;
-  const wm = getWorkerMetrics(w.id);
+  const wm = getTerminalMetrics(w.id);
+  const errorLine = w.status === 'error' && w.last_error
+    ? `<div class="row-error" title="${esc(w.last_error)}">${esc(w.last_error)}</div>`
+    : '';
   const actions = `<div class="row-actions" onclick="event.stopPropagation()">
-      <button class="icon-btn icon-btn--square btn-primary" title="Restart" aria-label="Restart" onclick="restartWorker('${w.id}')" ${isBusy ? 'disabled' : ''}>${icon('restart')}</button>
+      <button class="icon-btn icon-btn--square btn-primary" title="Restart" aria-label="Restart" onclick="restartTerminal('${w.id}')" ${isBusy ? 'disabled' : ''}>${icon('restart')}</button>
       <button class="icon-btn icon-btn--square btn-ghost" title="Configure" aria-label="Configure" onclick="startEdit('${w.id}')">${icon('edit')}</button>
-      <button class="icon-btn icon-btn--square btn-danger btn-delete" id="del-${w.id}" title="Delete" aria-label="Delete" onclick="deleteWorker('${w.id}', this)">${icon('trash')}</button>
+      <button class="icon-btn icon-btn--square btn-danger btn-delete" id="del-${w.id}" title="Delete" aria-label="Delete" onclick="deleteTerminal('${w.id}', this)">${icon('trash')}</button>
     </div>`;
 
   return `
   <li class="worker-row${isSelected ? ' selected' : ''}" id="row-${w.id}"
-      onclick="selectWorker('${w.id}')">
+      onclick="selectTerminal('${w.id}')">
     <div class="row-top">
       <span class="status-dot" style="background:${color}"></span>
       <span class="row-name" title="${esc(w.name)}">${esc(displayName)}</span>
@@ -470,38 +516,38 @@ function renderRow(w) {
       </div>
       <span class="row-port">:${w.port}</span>
     </div>
+    ${errorLine}
   </li>`;
 }
 
-// ── Worker selection + VNC ────────────────────────────────────────────────────
-function selectWorker(id) {
+// ── Terminal selection + VNC ────────────────────────────────────────────────────
+function selectTerminal(id) {
   _selectedId = id;
+  _selectedWorkerStatus = null;
   localStorage.setItem(SELECTED_KEY, id || '');
   renderList();
-  const w = getWorkerById(id);
+  const w = getTerminalById(id);
   const screen = document.getElementById('vnc-screen');
   const placeholder = document.getElementById('vnc-placeholder');
   if (!w) {
-    disconnectWorkerVNC();
+    disconnectTerminalVNC();
     _workerVncId = null;
     if (screen) screen.innerHTML = '';
     placeholder.style.display = 'flex';
-    document.getElementById('vnc-refresh-btn').style.display = 'none';
     stopLogPolling();
     return;
   }
   switchLogTab('worker');
   if (w.status !== 'running') {
-    disconnectWorkerVNC();
+    disconnectTerminalVNC();
     _workerVncId = null;
     if (screen) screen.innerHTML = '';
     placeholder.style.display = 'flex';
-    document.getElementById('vnc-refresh-btn').style.display = 'none';
     return;
   }
   _workerVncId = id;
   placeholder.style.display = 'none';
-  connectWorkerVNC(id);
+  connectTerminalVNC(id);
 }
 
 function esc(s) {
@@ -607,14 +653,14 @@ function initSplitters() {
   });
 }
 
-// ── Worker actions ─────────────────────────────────────────────────────────────
-async function restartWorker(id) {
+// ── Terminal actions ─────────────────────────────────────────────────────────────
+async function restartTerminal(id) {
   const btn = document.querySelector(`#row-${id} [title="Restart"]`);
   if (btn) { btn.disabled = true; btn.innerHTML = icon('spinner'); }
   try {
     await api('POST', `workers/${id}/restart`);
-    toast('Worker restarting…');
-    fetchWorkers();
+    toast('Terminal restarting…');
+    fetchTerminals();
     switchLogTab('system');
   } catch (e) { toast(e.message, true); }
   finally { if (btn) { btn.disabled = false; btn.innerHTML = icon('restart'); } }
@@ -624,7 +670,7 @@ let _deleteArmed = null;
 let _deleteTimer = null;
 let _deleteInFlight = null;
 
-function deleteWorker(id, btn) {
+function deleteTerminal(id, btn) {
   if (_deleteInFlight === id) return; // already deleting
   if (_deleteArmed === id) {
     // Second click — execute (non-blocking)
@@ -635,7 +681,11 @@ function deleteWorker(id, btn) {
     btn.innerHTML = icon('spinner');
     _deleteInFlight = id;
     api('DELETE', `workers/${id}`)
-      .then(() => { toast('Worker deleted.'); fetchWorkers(); switchLogTab('system'); })
+      .then(() => {
+        toast('Terminal deleted.');
+        fetchTerminals().catch(err => console.warn('fetchTerminals after delete failed:', err));
+        switchLogTab('system');
+      })
       .catch(e => { toast(e.message, true); if (btn) { btn.disabled = false; btn.innerHTML = icon('trash'); } })
       .finally(() => { _deleteInFlight = null; });
     return;
@@ -661,7 +711,7 @@ async function rotateToken(id) {
   try {
     await api('POST', `workers/${id}/rotate-token`);
     toast('Token rotated.');
-    fetchWorkers();
+    fetchTerminals();
   } catch (e) { toast(e.message, true); }
 }
 
@@ -676,10 +726,6 @@ function generateToken() {
 // ── Modal helpers (kept for potential future use) ────────────────────────────
 function openModal(id)  { document.getElementById(id)?.classList.add('open'); }
 function closeModal(id) { document.getElementById(id)?.classList.remove('open'); }
-
-function getPreferredTheme() {
-  return localStorage.getItem(THEME_KEY) || 'dark';
-}
 
 function getPreferredAccent() {
   return localStorage.getItem(ACCENT_KEY) || ACCENT_PRESETS[0].key;
@@ -703,27 +749,31 @@ function getStoredIndex(key, presets, fallback = 0) {
   return index >= 0 ? index : fallback;
 }
 
-function applyTheme(theme) {
-  document.body.dataset.theme = theme;
-  localStorage.setItem(THEME_KEY, theme);
-  const btn = document.getElementById('themeToggleBtn');
-  if (btn) {
-    btn.innerHTML = theme === 'dark' ? '&#127769;' : '&#9728;';
-    btn.title = theme === 'dark' ? 'Theme: dark' : 'Theme: light';
-  }
+function _currentAccentTone(preset) {
+  const isLight = document.body.dataset.theme === 'light';
+  return isLight ? preset.light : preset.dark;
 }
 
 function applyAccent(index) {
   const preset = ACCENT_PRESETS[index % ACCENT_PRESETS.length];
-  document.documentElement.style.setProperty('--accent', preset.accent);
-  document.documentElement.style.setProperty('--accent-hl', preset.accentHl);
-  document.documentElement.style.setProperty('--accent-rgb', preset.rgb);
+  const tone = _currentAccentTone(preset);
+  document.documentElement.style.setProperty('--accent', tone.accent);
+  document.documentElement.style.setProperty('--accent-hl', tone.accentHl);
+  document.documentElement.style.setProperty('--accent-rgb', tone.rgb);
   localStorage.setItem(ACCENT_KEY, preset.key);
   const btn = document.getElementById('accentCycleBtn');
   if (btn) {
-    btn.style.setProperty('--dot-color', preset.accentHl);
+    btn.style.setProperty('--dot-color', tone.accentHl);
     btn.title = `Accent: ${preset.key}`;
   }
+  _refreshBackgroundTint();
+}
+
+function _refreshBackgroundTint() {
+  const rgb = getComputedStyle(document.documentElement).getPropertyValue('--accent-rgb').trim();
+  const isDark = document.body.dataset.theme !== 'light';
+  const opacity = isDark ? 0.07 : 0.05;
+  document.body.style.background = `radial-gradient(ellipse at top right, rgba(${rgb}, ${opacity}) 0%, transparent 60%), var(--bg)`;
 }
 
 function applyBackground(index) {
@@ -734,14 +784,17 @@ function applyBackground(index) {
   document.documentElement.style.setProperty('--border', preset.border);
   document.documentElement.style.setProperty('--text', preset.text);
   document.documentElement.style.setProperty('--muted', preset.muted);
+  document.body.dataset.theme = preset.theme;
   localStorage.setItem(BACKGROUND_KEY, preset.key);
+  localStorage.setItem(THEME_KEY, preset.theme);
   const btn = document.getElementById('backgroundCycleBtn');
   if (btn) {
-    btn.innerHTML = preset.label;
-    btn.title = `Background: ${preset.key}`;
-    btn.style.background = `radial-gradient(circle at 50% 50%, rgba(${preset.tintRgb}, 0.34), rgba(${preset.tintRgb}, 0.16))`;
-    btn.style.borderColor = `rgba(${preset.tintRgb}, 0.52)`;
+    btn.innerHTML = '&#11035;';
+    btn.title = `Theme: ${preset.key}`;
+    btn.style.color = preset.swatch;
+    btn.style.borderColor = preset.border;
   }
+  applyAccent(getStoredIndex(ACCENT_KEY, ACCENT_PRESETS));
 }
 
 function applyFont(index) {
@@ -794,9 +847,6 @@ function applyControlSelection(type, key) {
   if (type === 'background') {
     applyBackground(Math.max(0, BACKGROUND_PRESETS.findIndex(p => p.key === key)));
   }
-  if (type === 'theme') {
-    applyTheme(key);
-  }
   if (type === 'font') {
     applyFont(Math.max(0, FONT_PRESETS.findIndex(p => p.key === key)));
   }
@@ -822,9 +872,9 @@ function showQuickPicker(type, triggerEl, action = {}) {
     options = ACCENT_PRESETS.map((preset) => ({
       key: preset.key,
       label: preset.key.charAt(0).toUpperCase() + preset.key.slice(1),
-      swatchStyle: `background:${preset.accentHl}; border-radius:50%; border-color:rgba(0,0,0,0.12)`,
+      swatchStyle: `background:linear-gradient(135deg, ${preset.dark.accent} 0%, ${preset.light.accent} 100%); border-radius:50%; border-color:rgba(0,0,0,0.12)`,
       previewText: '',
-      labelStyle: `color:${preset.accentHl}; font-weight:600`,
+      labelStyle: `color:${_currentAccentTone(preset).accentHl}; font-weight:700`,
     }));
   }
   if (type === 'background') {
@@ -832,17 +882,10 @@ function showQuickPicker(type, triggerEl, action = {}) {
     options = BACKGROUND_PRESETS.map((preset) => ({
       key: preset.key,
       label: preset.key.charAt(0).toUpperCase() + preset.key.slice(1),
-      swatchStyle: `background:radial-gradient(circle at 35% 30%, rgba(${preset.tintRgb}, 0.65), ${preset.bg}); border-color:rgba(${preset.tintRgb}, 0.6); border-radius:6px`,
+      swatchStyle: `background:${preset.swatch}; border-color:${preset.border}; border-radius:6px`,
       previewText: '',
       labelStyle: '',
     }));
-  }
-  if (type === 'theme') {
-    activeKey = getPreferredTheme();
-    options = [
-      { key: 'light', label: 'Light', swatchStyle: 'background:#f4f0e7; border-radius:5px', previewText: '', labelStyle: '' },
-      { key: 'dark', label: 'Dark', swatchStyle: 'background:#0d0d1a; border-radius:5px', previewText: '', labelStyle: '' },
-    ];
   }
   if (type === 'font') {
     activeKey = getPreferredFont();
@@ -907,10 +950,6 @@ function initQuickControls() {
     e.stopPropagation();
     showQuickPicker('background', e.currentTarget);
   });
-  document.getElementById('themeToggleBtn').addEventListener('click', (e) => {
-    e.stopPropagation();
-    showQuickPicker('theme', e.currentTarget);
-  });
   document.getElementById('accentCycleBtn').addEventListener('click', (e) => {
     e.stopPropagation();
     showQuickPicker('accent', e.currentTarget);
@@ -930,7 +969,6 @@ function initQuickControls() {
     setQuickControlsCollapsed(collapsed);
   });
 
-  applyTheme(getPreferredTheme());
   applyAccent(getStoredIndex(ACCENT_KEY, ACCENT_PRESETS));
   applyBackground(getStoredIndex(BACKGROUND_KEY, BACKGROUND_PRESETS));
   applyFont(getStoredIndex(FONT_KEY, FONT_PRESETS));
@@ -949,7 +987,7 @@ function initQuickControls() {
 // Close on Escape
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
-    if (_addingWorker) cancelAdd();
+    if (_addingTerminal) cancelAdd();
     if (_editingId) cancelEdit();
     hideQuickPicker();
     localStorage.setItem(QUICK_CONTROLS_COLLAPSED_KEY, '1');
@@ -1033,7 +1071,7 @@ function renderHeaderMetrics() {
   }
 }
 
-function getWorkerMetrics(workerId) {
+function getTerminalMetrics(workerId) {
   if (!_metrics || !_metrics.workers) return null;
   return _metrics.workers.find(m => m.id === workerId) || null;
 }
@@ -1089,26 +1127,27 @@ function switchLogTab(tab) {
 async function connectInstallerVNC() {
   const target = document.getElementById('vnc-screen');
   if (!target) return;
-  disconnectWorkerVNC();
+  disconnectTerminalVNC();
   target.innerHTML = '';
   document.getElementById('vnc-placeholder').style.display = 'none';
 
   const encrypt = location.protocol === 'https:';
   const wsPath = '/api/vnc/installer';
-  const src = `/noVNC/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=3000&path=${encodeURIComponent(wsPath)}&encrypt=${encrypt}`;
+  const src = `/noVNC/vnc.html?autoconnect=true&resize=remote&reconnect=true&reconnect_delay=1500&path=${encodeURIComponent(wsPath)}&encrypt=${encrypt}`;
   const iframe = document.createElement('iframe');
   iframe.id = 'vnc-iframe-installer';
   iframe.src = src;
   iframe.style.cssText = 'width:100%;height:100%;border:none;display:block;background:#000';
   iframe.allow = 'clipboard-read; clipboard-write';
+  iframe.addEventListener('load', _fitAllVnc, { once: true });
   target.appendChild(iframe);
   _installerRfb = iframe;
 }
 
 function disconnectInstallerVNC() {
-  if (_installerRfb) {
-    _installerRfb = null;
-  }
+  _installerRfb = null;
+  const target = document.getElementById('vnc-screen');
+  if (target) target.innerHTML = '';
 }
 
 // ── Engine readiness ──────────────────────────────────────────────────────────
@@ -1143,17 +1182,17 @@ function pulseEngineDot() {
   dot.addEventListener('animationend', () => dot.classList.remove('status-dot--ok-pulse'), { once: true });
 }
 
-function setAddWorkerEnabled(enabled) {
+function setAddTerminalEnabled(enabled) {
   const btn = document.getElementById('add-btn');
   if (!btn) return;
   btn.disabled = !enabled;
-  btn.title = enabled ? 'Add Worker' : 'Engine is starting — please wait';
+  btn.title = enabled ? 'Add Terminal' : 'Engine is starting — please wait';
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function waitForEngine() {
-  setAddWorkerEnabled(false);
+  setAddTerminalEnabled(false);
   startEngineLogs();
   connectInstallerVNC();
   for (;;) {
@@ -1164,7 +1203,7 @@ async function waitForEngine() {
       setEngineBadge(state);
       if (state === 'ready') {
         disconnectInstallerVNC();
-        setAddWorkerEnabled(true);
+        setAddTerminalEnabled(true);
         return;
       }
     } catch (e) {
@@ -1175,7 +1214,7 @@ async function waitForEngine() {
 }
 
 async function boot() {
-  setAddWorkerEnabled(false);
+  setAddTerminalEnabled(false);
   setEngineBadge('starting');
   await waitForEngine();
   setEngineBadge('ready');

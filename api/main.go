@@ -1,4 +1,4 @@
-// mt5-fleet api service
+// my5fleet api service
 //
 // Responsibilities:
 //   - Serve the frontend/ static assets (SPA fallback to index.html)
@@ -48,7 +48,7 @@ func main() {
 	// Everything else → frontend SPA (falls back to index.html for unknown paths)
 	mux.Handle("/", fs)
 
-	log.Printf("mt5-fleet api listening :%s", port)
+	log.Printf("my5fleet api listening :%s", port)
 	log.Printf("  proxy  /api/* → %s", engineURL)
 	log.Printf("  static /      ← %s", frontendDir)
 

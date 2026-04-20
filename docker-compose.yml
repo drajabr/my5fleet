@@ -4,25 +4,23 @@ services:
   # Runs Wine + Xvfb + MT5 terminals + RPyC servers + internal control API.
   # The control API (port 18810) is intentionally NOT published to the host.
   engine:
-    image: ${ENGINE_IMAGE:-ghcr.io/drajabr/mt5-fleet-engine:latest}
+    image: ${ENGINE_IMAGE:-ghcr.io/drajabr/my5fleet-engine:latest}
     container_name: engine
     restart: unless-stopped
     environment:
-      FLEET_DIR: /mt5-fleet
-      WINEPREFIX: /mt5-fleet/wineprefix
+      FLEET_DIR: /my5fleet
+      WINEPREFIX: /my5fleet/wineprefix
       DISPLAY: ":99"
       WINEDEBUG: "-all"
     volumes:
       # Only workers/ and config/ need to persist — wineprefix + reference
       # are baked into the image and live in the image layer (not on a volume).
-      - mt5-workers:/mt5-fleet/workers
-      - mt5-config:/mt5-fleet/config
+      - mt5-workers:/my5fleet/workers
+      - mt5-config:/my5fleet/config
     # Publish the RPyC worker port range so clients can connect directly.
     # Each worker is allocated the next free port starting from 18812.
     ports:
       - "${WORKER_PORT_RANGE_START:-18812}-${WORKER_PORT_RANGE_END:-18912}:18812-18912"
-      # VNC WebSocket ports: host 19000-19100 → container 6800-6900 (one per worker)
-      - "${VNC_WS_PORT_RANGE_START:-19000}-${VNC_WS_PORT_RANGE_END:-19100}:6800-6900"
     networks:
       - mt5-internal
     # Raise shared memory limit – Wine benefits from it
@@ -31,7 +29,7 @@ services:
   # ── api ──────────────────────────────────────────────────────────────────────
   # Serves the single-page frontend and proxies management calls to the engine.
   api:
-    image: ${API_IMAGE:-ghcr.io/drajabr/mt5-fleet-api:latest}
+    image: ${API_IMAGE:-ghcr.io/drajabr/my5fleet-api:latest}
     container_name: api
     restart: unless-stopped
     environment:
@@ -51,7 +49,7 @@ services:
 #     driver_opts:
 #       type: none
 #       o: bind
-#       device: /opt/mt5-fleet-data
+#       device: /opt/my5fleet-data
 volumes:
   mt5-workers:
   mt5-config:

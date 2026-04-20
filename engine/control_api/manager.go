@@ -14,20 +14,19 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-type WorkerStatus string
+type TerminalStatus string
 
 const (
-	StatusStopped  WorkerStatus = "stopped"
-	StatusStarting WorkerStatus = "starting"
-	StatusRunning  WorkerStatus = "running"
-	StatusStopping WorkerStatus = "stopping"
-	StatusError    WorkerStatus = "error"
+	StatusStopped  TerminalStatus = "stopped"
+	StatusStarting TerminalStatus = "starting"
+	StatusRunning  TerminalStatus = "running"
+	StatusStopping TerminalStatus = "stopping"
+	StatusError    TerminalStatus = "error"
 )
 
 type MT5Config struct {
@@ -36,22 +35,23 @@ type MT5Config struct {
 	Server   string `json:"server"`
 }
 
-type Worker struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	Status      WorkerStatus `json:"status"`
-	KeepAlive   *bool        `json:"keep_alive,omitempty"`
-	Port        int          `json:"port"`
-	Token       string       `json:"token"`
-	Config      *MT5Config   `json:"config,omitempty"`
-	PIDTerminal int          `json:"pid_terminal,omitempty"`
-	PIDRPyC     int          `json:"pid_rpyc,omitempty"`
-	PIDWM       int          `json:"pid_wm,omitempty"`
-	VNCWSPort   int          `json:"vnc_ws_port,omitempty"`
-	PIDXvnc     int          `json:"pid_xvnc,omitempty"`
-	PIDXvfb     int          `json:"pid_xvfb,omitempty"`
-	PIDx11vnc   int          `json:"pid_x11vnc,omitempty"`
-	PIDWsockify int          `json:"pid_wsockify,omitempty"`
+type Terminal struct {
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	Status      TerminalStatus `json:"status"`
+	LastError   string         `json:"last_error,omitempty"`
+	KeepAlive   *bool          `json:"keep_alive,omitempty"`
+	Port        int            `json:"port"`
+	Token       string         `json:"token"`
+	Config      *MT5Config     `json:"config,omitempty"`
+	PIDTerminal int            `json:"pid_terminal,omitempty"`
+	PIDRPyC     int            `json:"pid_rpyc,omitempty"`
+	PIDWM       int            `json:"pid_wm,omitempty"`
+	VNCWSPort   int            `json:"vnc_ws_port,omitempty"`
+	PIDXvnc     int            `json:"pid_xvnc,omitempty"`
+	PIDXvfb     int            `json:"pid_xvfb,omitempty"`
+	PIDx11vnc   int            `json:"pid_x11vnc,omitempty"`
+	PIDWsockify int            `json:"pid_wsockify,omitempty"`
 }
 
 // ── Environment / paths ────────────────────────────────────────────────────────
@@ -76,15 +76,33 @@ var (
 
 	writableDirs = []string{"MQL5", "logs", "config", "tester", "bases", "profiles"}
 
-	mu            sync.Mutex // guards all workers.json reads/writes
-	cachedWorkers map[string]*Worker
-	cachedPath    string
+	mu              sync.Mutex // guards all workers.json reads/writes
+	cachedTerminals map[string]*Terminal
+	cachedPath      string
+	startMu         sync.Mutex
+	startInFlight   = make(map[string]struct{})
 )
+
+func tryStartTerminal(id string) bool {
+	startMu.Lock()
+	defer startMu.Unlock()
+	if _, exists := startInFlight[id]; exists {
+		return false
+	}
+	startInFlight[id] = struct{}{}
+	return true
+}
+
+func doneStartTerminal(id string) {
+	startMu.Lock()
+	delete(startInFlight, id)
+	startMu.Unlock()
+}
 
 const workerSupervisorInterval = 10 * time.Second
 
 func initPaths() {
-	fleetDir = envOr("FLEET_DIR", "/mt5-fleet")
+	fleetDir = envOr("FLEET_DIR", "/my5fleet")
 	display = envOr("DISPLAY", ":99")
 	winePrefix = envOr("WINEPREFIX", filepath.Join(fleetDir, "wineprefix"))
 	workersDir = filepath.Join(fleetDir, "workers")
@@ -97,30 +115,30 @@ func initPaths() {
 
 // ── Persistence ────────────────────────────────────────────────────────────────
 
-func load() (map[string]*Worker, error) {
-	if cachedWorkers != nil && cachedPath == workersJSON {
-		return cachedWorkers, nil
+func load() (map[string]*Terminal, error) {
+	if cachedTerminals != nil && cachedPath == workersJSON {
+		return cachedTerminals, nil
 	}
 	data, err := os.ReadFile(workersJSON)
 	if os.IsNotExist(err) {
-		w := make(map[string]*Worker)
-		cachedWorkers = w
+		w := make(map[string]*Terminal)
+		cachedTerminals = w
 		cachedPath = workersJSON
 		return w, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	workers := make(map[string]*Worker)
+	workers := make(map[string]*Terminal)
 	if err := json.Unmarshal(data, &workers); err != nil {
 		return nil, err
 	}
-	cachedWorkers = workers
+	cachedTerminals = workers
 	cachedPath = workersJSON
 	return workers, nil
 }
 
-func save(workers map[string]*Worker) error {
+func save(workers map[string]*Terminal) error {
 	if err := os.MkdirAll(filepath.Dir(workersJSON), 0o755); err != nil {
 		return err
 	}
@@ -135,14 +153,14 @@ func save(workers map[string]*Worker) error {
 	if err := os.Rename(tmp, workersJSON); err != nil {
 		return err
 	}
-	cachedWorkers = workers
+	cachedTerminals = workers
 	cachedPath = workersJSON
 	return nil
 }
 
 // ── Allocation helpers ─────────────────────────────────────────────────────────
 
-func nextID(workers map[string]*Worker) string {
+func nextID(workers map[string]*Terminal) string {
 	for i := 1; ; i++ {
 		id := fmt.Sprintf("terminal_%d", i)
 		if _, exists := workers[id]; !exists {
@@ -151,7 +169,7 @@ func nextID(workers map[string]*Worker) string {
 	}
 }
 
-func nextPort(workers map[string]*Worker) int {
+func nextPort(workers map[string]*Terminal) int {
 	used := make(map[int]struct{})
 	for _, w := range workers {
 		used[w.Port] = struct{}{}
@@ -170,13 +188,13 @@ func pidAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	return syscall.Kill(pid, 0) == nil
+	return processExists(pid)
 }
 
-// pidMatchesWorker checks /proc/<pid>/cmdline to verify the process belongs to
+// pidMatchesTerminal checks /proc/<pid>/cmdline to verify the process belongs to
 // the expected worker. This prevents false positives from PID reuse after a
 // container restart.
-func pidMatchesWorker(pid int, workerID string) bool {
+func pidMatchesTerminal(pid int, workerID string) bool {
 	if pid <= 0 {
 		return false
 	}
@@ -187,9 +205,9 @@ func pidMatchesWorker(pid int, workerID string) bool {
 	return strings.Contains(string(data), workerID)
 }
 
-func deriveStatus(w *Worker) WorkerStatus {
-	aliveT := pidAlive(w.PIDTerminal) && pidMatchesWorker(w.PIDTerminal, w.ID)
-	aliveR := pidAlive(w.PIDRPyC) && pidMatchesWorker(w.PIDRPyC, w.ID)
+func deriveStatus(w *Terminal) TerminalStatus {
+	aliveT := pidAlive(w.PIDTerminal) && pidMatchesTerminal(w.PIDTerminal, w.ID)
+	aliveR := pidAlive(w.PIDRPyC) && pidMatchesTerminal(w.PIDRPyC, w.ID)
 	switch {
 	case aliveT && aliveR:
 		return StatusRunning
@@ -238,7 +256,7 @@ func killPID(pid int, label string) {
 		return
 	}
 	log.Printf("[%s] SIGTERM → PID %d", label, pid)
-	_ = syscall.Kill(pid, syscall.SIGTERM)
+	_ = terminateProcess(pid)
 	for i := 0; i < 8; i++ {
 		time.Sleep(time.Second)
 		if !pidAlive(pid) {
@@ -246,7 +264,7 @@ func killPID(pid int, label string) {
 		}
 	}
 	log.Printf("[%s] SIGKILL → PID %d", label, pid)
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	_ = forceKillProcess(pid)
 }
 
 // ── Filesystem helpers ─────────────────────────────────────────────────────────
@@ -296,7 +314,7 @@ func createFS(workerID string) error {
 		}
 	}
 
-	log.Printf("[createFS] Worker filesystem ready: %s", workerDir)
+	log.Printf("[createFS] Terminal filesystem ready: %s", workerDir)
 	return nil
 }
 
@@ -324,7 +342,7 @@ func boolPtr(v bool) *bool {
 	return &b
 }
 
-func keepAliveEnabled(w *Worker) bool {
+func keepAliveEnabled(w *Terminal) bool {
 	if w == nil || w.KeepAlive == nil {
 		// Backward-compatible default for old workers without this field.
 		return true
@@ -332,9 +350,29 @@ func keepAliveEnabled(w *Worker) bool {
 	return *w.KeepAlive
 }
 
+func normalizeTerminalName(name string) string {
+	return strings.TrimSpace(name)
+}
+
+func terminalNameExists(workers map[string]*Terminal, exceptID string, name string) bool {
+	want := strings.ToLower(strings.TrimSpace(name))
+	if want == "" {
+		return false
+	}
+	for id, w := range workers {
+		if id == exceptID || w == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(w.Name)) == want {
+			return true
+		}
+	}
+	return false
+}
+
 // ── Public manager operations ──────────────────────────────────────────────────
 
-func ListWorkers() ([]*Worker, error) {
+func ListTerminals() ([]*Terminal, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -344,7 +382,7 @@ func ListWorkers() ([]*Worker, error) {
 	}
 
 	changed := false
-	list := make([]*Worker, 0, len(workers))
+	list := make([]*Terminal, 0, len(workers))
 	for _, w := range workers {
 		if w.KeepAlive == nil {
 			w.KeepAlive = boolPtr(true)
@@ -357,6 +395,10 @@ func ListWorkers() ([]*Worker, error) {
 			(w.Status == StatusStarting || w.Status == StatusStopping ||
 				w.Status == StatusRunning || w.Status == StatusError) {
 			w.Status = live
+			changed = true
+		}
+		if live != StatusError && w.LastError != "" {
+			w.LastError = ""
 			changed = true
 		}
 		// Backfill VNCWSPort for workers created before VNC support
@@ -373,7 +415,7 @@ func ListWorkers() ([]*Worker, error) {
 	return list, nil
 }
 
-func GetWorker(id string) (*Worker, error) {
+func GetTerminal(id string) (*Terminal, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -385,34 +427,61 @@ func GetWorker(id string) (*Worker, error) {
 	if !ok {
 		return nil, nil
 	}
-	w.Status = deriveStatus(w)
+	live := deriveStatus(w)
+	w.Status = live
+	if live != StatusError && w.LastError != "" {
+		w.LastError = ""
+		_ = save(workers)
+	}
 	return w, nil
 }
 
-func CreateWorker(name string, token string, config *MT5Config) (*Worker, error) {
+func SetTerminalError(id, reason string) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "terminal start failed"
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
 
 	workers, err := load()
 	if err != nil {
+		return
+	}
+	w, ok := workers[id]
+	if !ok {
+		return
+	}
+	w.Status = StatusError
+	w.LastError = reason
+	_ = save(workers)
+}
+
+func CreateTerminal(name string, token string, config *MT5Config) (*Terminal, error) {
+	mu.Lock()
+	workers, err := load()
+	if err != nil {
+		mu.Unlock()
 		return nil, err
 	}
 
 	id := nextID(workers)
 	port := nextPort(workers)
 
-	if err := createFS(id); err != nil {
-		return nil, err
-	}
-
+	name = normalizeTerminalName(name)
 	if name == "" {
 		name = id
+	}
+	if terminalNameExists(workers, "", name) {
+		mu.Unlock()
+		return nil, fmt.Errorf("terminal name %q already exists", name)
 	}
 	if token == "" {
 		token = newToken()
 	}
 
-	w := &Worker{
+	w := &Terminal{
 		ID:        id,
 		Name:      name,
 		Status:    StatusStopped,
@@ -424,43 +493,83 @@ func CreateWorker(name string, token string, config *MT5Config) (*Worker, error)
 	}
 	workers[id] = w
 	if err := save(workers); err != nil {
+		mu.Unlock()
 		return nil, err
 	}
-	log.Printf("[create] Worker %s created on port %d", id, port)
+	mu.Unlock()
+
+	if err := createFS(id); err != nil {
+		mu.Lock()
+		defer mu.Unlock()
+		if ww, loadErr := load(); loadErr == nil {
+			delete(ww, id)
+			_ = save(ww)
+		}
+		return nil, err
+	}
+
+	log.Printf("[create] Terminal %s created on port %d", id, port)
 	return w, nil
 }
 
-func DeleteWorker(id string) error {
+func DeleteTerminal(id string) error {
 	mu.Lock()
-	defer mu.Unlock()
-
 	workers, err := load()
 	if err != nil {
+		mu.Unlock()
 		return err
 	}
 	w, ok := workers[id]
 	if !ok {
+		mu.Unlock()
 		return nil // idempotent
 	}
+	snap := *w
+	mu.Unlock()
 
 	// Stop if running
-	if deriveStatus(w) != StatusStopped {
-		stopProcs(w)
+	if deriveStatus(&snap) != StatusStopped {
+		stopProcs(&snap)
 	}
 
-	name := w.Name
 	if err := removeFS(id); err != nil {
 		return err
 	}
-	delete(workers, id)
-	if err := save(workers); err != nil {
+
+	mu.Lock()
+	defer mu.Unlock()
+	workers, err = load()
+	if err != nil {
 		return err
 	}
-	log.Printf("[delete] Worker %s (%s) deleted", id, name)
+	if existing, exists := workers[id]; exists {
+		snap.Name = existing.Name
+		delete(workers, id)
+		if err := save(workers); err != nil {
+			return err
+		}
+	}
+	log.Printf("[delete] Terminal %s (%s) deleted", id, snap.Name)
 	return nil
 }
 
-func StartWorker(id string) (*Worker, error) {
+func StartTerminal(id string) (*Terminal, error) {
+	if !tryStartTerminal(id) {
+		mu.Lock()
+		defer mu.Unlock()
+		workers, err := load()
+		if err != nil {
+			return nil, err
+		}
+		w, ok := workers[id]
+		if !ok {
+			return nil, nil
+		}
+		cp := *w
+		return &cp, nil
+	}
+	defer doneStartTerminal(id)
+
 	// ── Phase 1: read state + mark "starting" under lock ───────────────────────
 	mu.Lock()
 	workers, err := load()
@@ -487,7 +596,7 @@ func StartWorker(id string) (*Worker, error) {
 	}
 
 	if current == StatusError {
-		log.Printf("[start] Worker %s unhealthy; cleaning up stale processes before restart", id)
+		log.Printf("[start] Terminal %s unhealthy; cleaning up stale processes before restart", id)
 		stopProcs(w)
 	}
 
@@ -503,6 +612,7 @@ func StartWorker(id string) (*Worker, error) {
 	w.PIDx11vnc = 0
 	w.PIDWsockify = 0
 	w.Status = StatusStarting
+	w.LastError = ""
 	w.KeepAlive = boolPtr(true)
 	w.VNCWSPort = (port - basePort) + vncWSHostBase
 
@@ -514,12 +624,17 @@ func StartWorker(id string) (*Worker, error) {
 
 	// ── Phase 2: spawn all processes WITHOUT holding the lock ──────────────────
 	// On failure, set status to error so the supervisor can retry.
-	setError := func() {
+	setError := func(reason string) {
+		reason = strings.TrimSpace(reason)
+		if reason == "" {
+			reason = "terminal start failed"
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		if ww, err := load(); err == nil {
 			if wk, ok := ww[id]; ok {
 				wk.Status = StatusError
+				wk.LastError = reason
 				_ = save(ww)
 			}
 		}
@@ -527,7 +642,7 @@ func StartWorker(id string) (*Worker, error) {
 
 	workerDir := filepath.Join(workersDir, id)
 	logsDir := filepath.Join(workerDir, "logs")
-	winMT5Path := fmt.Sprintf(`Z:\mt5-fleet\workers\%s\terminal64.exe`, id)
+	winMT5Path := fmt.Sprintf(`Z:\my5fleet\workers\%s\terminal64.exe`, id)
 
 	// ── Per-worker virtual display (Xvnc) ─────────────────────────────────────
 	portOffset := port - basePort
@@ -555,26 +670,32 @@ func StartWorker(id string) (*Worker, error) {
 	xvncCmd.Stdout = os.Stdout
 	xvncCmd.Stderr = os.Stderr
 	if err := xvncCmd.Start(); err != nil {
-		setError()
+		setError(fmt.Sprintf("failed to start Xvnc: %v", err))
 		return nil, fmt.Errorf("failed to start Xvnc for %s: %w", id, err)
 	}
 	log.Printf("[start] Xvnc PID %d for %s on display %s rfbport %d", xvncCmd.Process.Pid, id, workerDisplay, vncInternalPort)
-	if err := waitForXvncReady(displayNum, vncInternalPort, 10*time.Second); err != nil {
+	if err := waitForXvncReady(displayNum, vncInternalPort, 25*time.Second); err != nil {
 		killPID(xvncCmd.Process.Pid, "xvnc")
-		setError()
+		setError(fmt.Sprintf("Xvnc readiness failed: %v", err))
 		return nil, fmt.Errorf("xvnc did not become ready for %s: %w", id, err)
 	}
 	_ = exec.Command("xsetroot", "-display", workerDisplay, "-cursor_name", "left_ptr").Run()
 
-	// ── Tiling window manager (autotileWM) ─────────────────────────────────────
-	wmCmd := exec.Command("autotilewm")
-	wmCmd.Env = filteredEnv("DISPLAY="+workerDisplay, "XDG_RUNTIME_DIR=/tmp")
+	// ── Lightweight window manager (twm) ───────────────────────────────────────
+	wmCmd := exec.Command("twm", "-display", workerDisplay)
+	wmCmd.Env = filteredEnv(
+		"DISPLAY="+workerDisplay,
+		"XDG_RUNTIME_DIR=/tmp",
+	)
 	wmCmd.Stdout = os.Stdout
 	wmCmd.Stderr = os.Stderr
 	if err := wmCmd.Start(); err != nil {
-		log.Printf("[start] Warning: autotilewm failed for %s: %v", id, err)
+		log.Printf("[start] Warning: twm failed for %s: %v", id, err)
 	} else {
-		log.Printf("[start] autotilewm PID %d for %s on display %s", wmCmd.Process.Pid, id, workerDisplay)
+		log.Printf("[start] twm PID %d for %s on display %s", wmCmd.Process.Pid, id, workerDisplay)
+		if err := waitForWMReady(wmCmd.Process.Pid, 3*time.Second); err != nil {
+			log.Printf("[start] Warning: twm readiness check for %s failed: %v", id, err)
+		}
 	}
 
 	// ── Per-worker wine environment ────────────────────────────────────────────
@@ -585,10 +706,21 @@ func StartWorker(id string) (*Worker, error) {
 	)
 
 	// ── MT5 terminal ───────────────────────────────────────────────────────────
-	// MT5 runs directly on the X display, managed by autotileWM. Wine's
-	// Decorated=N registry key prevents internal title-bar reservations.
+	// MT5 runs directly on the X display, managed by twm.
 	tOut, _ := os.OpenFile(filepath.Join(logsDir, "terminal.stdout.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	tErr, _ := os.OpenFile(filepath.Join(logsDir, "terminal.stderr.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+
+	if _, err := os.Stat(workerDir); err != nil {
+		killPID(xvncCmd.Process.Pid, "xvnc")
+		if wmCmd.Process != nil {
+			killPID(wmCmd.Process.Pid, "wm")
+		}
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("worker %s deleted during start", id)
+		}
+		setError(fmt.Sprintf("worker directory check failed: %v", err))
+		return nil, fmt.Errorf("worker dir check failed for %s: %w", id, err)
+	}
 
 	termCmd := exec.Command("wine", winMT5Path, "/portable")
 	termCmd.Dir = workerDir
@@ -600,7 +732,7 @@ func StartWorker(id string) (*Worker, error) {
 		if wmCmd.Process != nil {
 			killPID(wmCmd.Process.Pid, "wm")
 		}
-		setError()
+		setError(fmt.Sprintf("failed to start MT5 terminal: %v", err))
 		return nil, fmt.Errorf("failed to start terminal: %w", err)
 	}
 	_ = tOut.Close()
@@ -633,12 +765,13 @@ func StartWorker(id string) (*Worker, error) {
 	}()
 
 	// Wine path for the RPyC log file (Z: maps Linux root → used by Wine Python)
-	winLogFile := fmt.Sprintf(`Z:\mt5-fleet\workers\%s\logs\rpyc.log`, id)
+	winLogFile := fmt.Sprintf(`Z:\my5fleet\workers\%s\logs\rpyc.log`, id)
 
 	rpycCmd := exec.Command("wine", winPython, rpycScript,
 		"--port", fmt.Sprintf("%d", port),
 		fmt.Sprintf("--token=%s", token),
 		"--mt5-path", winMT5Path,
+		"--portable",
 		"--log-file", winLogFile,
 	)
 	rpycCmd.Env = append(env, "PYTHONUNBUFFERED=1")
@@ -653,7 +786,7 @@ func StartWorker(id string) (*Worker, error) {
 		if wmCmd.Process != nil {
 			killPID(wmCmd.Process.Pid, "wm")
 		}
-		setError()
+		setError(fmt.Sprintf("failed to start RPyC server: %v", err))
 		return nil, fmt.Errorf("failed to start RPyC server: %w", err)
 	}
 	// Close write ends in the parent — goroutines read until EOF when child exits.
@@ -684,7 +817,16 @@ func StartWorker(id string) (*Worker, error) {
 	w, ok = workers[id]
 	if !ok {
 		mu.Unlock()
-		return nil, fmt.Errorf("worker %s disappeared during start", id)
+		killPID(rpycCmd.Process.Pid, "rpyc")
+		killPID(termCmd.Process.Pid, "terminal")
+		if wsCmd.Process != nil {
+			killPID(wsCmd.Process.Pid, "websockify")
+		}
+		if wmCmd.Process != nil {
+			killPID(wmCmd.Process.Pid, "wm")
+		}
+		killPID(xvncCmd.Process.Pid, "xvnc")
+		return nil, fmt.Errorf("worker %s deleted during start", id)
 	}
 
 	w.PIDTerminal = termCmd.Process.Pid
@@ -710,8 +852,8 @@ func StartWorker(id string) (*Worker, error) {
 	return w, nil
 }
 
-func reconcileWorkers() {
-	workers, err := ListWorkers()
+func reconcileTerminals() {
+	workers, err := ListTerminals()
 	if err != nil {
 		log.Printf("[supervisor] list workers failed: %v", err)
 		return
@@ -723,13 +865,13 @@ func reconcileWorkers() {
 		}
 
 		log.Printf("[supervisor] Ensuring worker %s is running (status=%s)", w.ID, w.Status)
-		if _, err := StartWorker(w.ID); err != nil {
-			log.Printf("[supervisor] StartWorker(%s) failed: %v", w.ID, err)
+		if _, err := StartTerminal(w.ID); err != nil {
+			log.Printf("[supervisor] StartTerminal(%s) failed: %v", w.ID, err)
 		}
 	}
 }
 
-func shouldSupervisorStart(w *Worker) bool {
+func shouldSupervisorStart(w *Terminal) bool {
 	if w == nil || !keepAliveEnabled(w) {
 		return false
 	}
@@ -741,15 +883,15 @@ func shouldSupervisorStart(w *Worker) bool {
 	}
 }
 
-func startWorkerSupervisor() {
+func startTerminalSupervisor() {
 	go func() {
-		reconcileWorkers()
+		reconcileTerminals()
 
 		ticker := time.NewTicker(workerSupervisorInterval)
 		defer ticker.Stop()
 
 		for range ticker.C {
-			reconcileWorkers()
+			reconcileTerminals()
 		}
 	}()
 }
@@ -771,6 +913,7 @@ func WaitForRPyCReady(id string, timeout time.Duration) error {
 		return fmt.Errorf("worker %s not found", id)
 	}
 	port := w.Port
+	token := w.Token
 	pidT := w.PIDTerminal
 	pidR := w.PIDRPyC
 	mu.Unlock()
@@ -778,13 +921,29 @@ func WaitForRPyCReady(id string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	for time.Now().Before(deadline) {
-		if !pidAlive(pidT) && !pidAlive(pidR) {
-			return fmt.Errorf("worker %s processes exited before RPyC became ready", id)
+		aliveT := pidAlive(pidT)
+		aliveR := pidAlive(pidR)
+
+		// Fail fast with a precise cause. Previously we waited until timeout when
+		// only one side died (most commonly RPyC), which obscured root causes.
+		if !aliveR {
+			if !aliveT {
+				return fmt.Errorf("worker %s processes exited before RPyC became ready", id)
+			}
+			return fmt.Errorf("RPyC process for %s exited before readiness", id)
 		}
+		if !aliveT {
+			return fmt.Errorf("terminal process for %s exited before readiness", id)
+		}
+
 		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 		if err == nil {
+			_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+			_, writeErr := conn.Write([]byte(token + "\n"))
 			_ = conn.Close()
-			return nil
+			if writeErr == nil {
+				return nil
+			}
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -822,20 +981,33 @@ func RefreshDisplay(id string) error {
 	return nil
 }
 
-func StopWorker(id string) (*Worker, error) {
+func StopTerminal(id string) (*Terminal, error) {
 	mu.Lock()
-	defer mu.Unlock()
-
 	workers, err := load()
 	if err != nil {
+		mu.Unlock()
 		return nil, err
 	}
 	w, ok := workers[id]
 	if !ok {
+		mu.Unlock()
 		return nil, nil
 	}
+	snap := *w
+	mu.Unlock()
 
-	stopProcs(w)
+	stopProcs(&snap)
+
+	mu.Lock()
+	defer mu.Unlock()
+	workers, err = load()
+	if err != nil {
+		return nil, err
+	}
+	w, ok = workers[id]
+	if !ok {
+		return nil, nil
+	}
 
 	w.PIDTerminal = 0
 	w.PIDRPyC = 0
@@ -846,16 +1018,17 @@ func StopWorker(id string) (*Worker, error) {
 	w.PIDWsockify = 0
 	w.KeepAlive = boolPtr(false)
 	w.Status = StatusStopped
+	w.LastError = ""
 	if err := save(workers); err != nil {
 		return nil, err
 	}
-	log.Printf("[stop] Worker %s (%s) stopped", id, w.Name)
-	return w, nil
+	log.Printf("[stop] Terminal %s (%s) stopped", id, w.Name)
+	cp := *w
+	return &cp, nil
 }
 
 // stopProcs terminates all sub-processes for a worker.
-// Must be called with mu held.
-func stopProcs(w *Worker) {
+func stopProcs(w *Terminal) {
 	killPID(w.PIDRPyC, "rpyc")
 	killPID(w.PIDTerminal, "terminal")
 	killPID(w.PIDWsockify, "websockify")
@@ -885,7 +1058,31 @@ func waitForXvncReady(displayNum, rfbPort int, timeout time.Duration) error {
 	return fmt.Errorf("timeout waiting for X display :%d and RFB port %d", displayNum, rfbPort)
 }
 
-func UpdateConfig(id string, config MT5Config) (*Worker, error) {
+func waitForWMReady(pid int, timeout time.Duration) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid wm pid: %d", pid)
+	}
+
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		if !pidAlive(pid) {
+			return fmt.Errorf("wm pid %d exited before becoming ready", pid)
+		}
+
+		// Lightweight WMs usually don't expose a readiness file; if still alive
+		// after a short stabilization period, treat as ready.
+		if time.Now().After(deadline.Add(-500 * time.Millisecond)) {
+			return nil
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return fmt.Errorf("timeout waiting for wm pid %d", pid)
+}
+
+func UpdateConfig(id string, config MT5Config) (*Terminal, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -902,11 +1099,11 @@ func UpdateConfig(id string, config MT5Config) (*Worker, error) {
 	if err := save(workers); err != nil {
 		return nil, err
 	}
-	log.Printf("[config] Worker %s (%s) configuration updated", id, w.Name)
+	log.Printf("[config] Terminal %s (%s) configuration updated", id, w.Name)
 	return w, nil
 }
 
-func RotateToken(id string) (*Worker, error) {
+func RotateToken(id string) (*Terminal, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -922,11 +1119,11 @@ func RotateToken(id string) (*Worker, error) {
 	if err := save(workers); err != nil {
 		return nil, err
 	}
-	log.Printf("[token] Worker %s (%s) token rotated", id, w.Name)
+	log.Printf("[token] Terminal %s (%s) token rotated", id, w.Name)
 	return w, nil
 }
 
-func RenameWorker(id, name string) (*Worker, error) {
+func RenameTerminal(id, name string) (*Terminal, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -938,19 +1135,24 @@ func RenameWorker(id, name string) (*Worker, error) {
 	if !ok {
 		return nil, nil
 	}
-	old := w.Name
-	if name != "" {
-		w.Name = name
+	name = normalizeTerminalName(name)
+	if name == "" {
+		name = w.Name
 	}
+	if terminalNameExists(workers, id, name) {
+		return nil, fmt.Errorf("terminal name %q already exists", name)
+	}
+	old := w.Name
+	w.Name = name
 	if err := save(workers); err != nil {
 		return nil, err
 	}
-	log.Printf("[rename] Worker %s renamed: %s → %s", id, old, w.Name)
+	log.Printf("[rename] Terminal %s renamed: %s → %s", id, old, w.Name)
 	return w, nil
 }
 
-// GetWorkerLogs returns the last ~200 lines from the worker's log files.
-func GetWorkerLogs(id string) []string {
+// GetTerminalLogs returns the last ~200 lines from the worker's log files.
+func GetTerminalLogs(id string) []string {
 	logDir := filepath.Join(workersDir, id, "logs")
 	entries, err := os.ReadDir(logDir)
 	if err != nil {

@@ -1,3 +1,3 @@
-module mt5-fleet/engine/control-api
+module my5fleet/engine/control-api
 
 go 1.22

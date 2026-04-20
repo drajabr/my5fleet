@@ -8,7 +8,7 @@ __pycache__/
 # Docker
 *.env
 
-# MT5 fleet runtime data (persisted in Docker volume, not repo)
+# my5fleet runtime data (persisted in Docker volume, not repo)
 mt5-data/
 
 # Editor

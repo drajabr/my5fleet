@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -87,8 +86,8 @@ func handleStatus(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func handleListWorkers(w http.ResponseWriter, _ *http.Request) {
-	workers, err := ListWorkers()
+func handleListTerminals(w http.ResponseWriter, _ *http.Request) {
+	workers, err := ListTerminals()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -96,7 +95,7 @@ func handleListWorkers(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, workers)
 }
 
-func handleCreateWorker(w http.ResponseWriter, r *http.Request) {
+func handleCreateTerminal(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name   string     `json:"name"`
 		Token  string     `json:"token"`
@@ -109,7 +108,7 @@ func handleCreateWorker(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name must be 100 characters or fewer")
 		return
 	}
-	worker, err := CreateWorker(body.Name, body.Token, body.Config)
+	worker, err := CreateTerminal(body.Name, body.Token, body.Config)
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
 			writeError(w, http.StatusConflict, err.Error())
@@ -124,21 +123,23 @@ func handleCreateWorker(w http.ResponseWriter, r *http.Request) {
 	// Auto-start in the background so the response returns immediately.
 	// The UI polls status and will see the worker transition to "running".
 	go func(id string) {
-		if _, err := StartWorker(id); err != nil {
+		if _, err := StartTerminal(id); err != nil {
 			log.Printf("[create] auto-start worker %s failed: %v", id, err)
+			SetTerminalError(id, err.Error())
 			return
 		}
 		if err := WaitForRPyCReady(id, 90*time.Second); err != nil {
 			log.Printf("[create] worker %s started but RPyC not ready yet: %v", id, err)
+			SetTerminalError(id, err.Error())
 		}
 	}(worker.ID)
 
 	writeJSON(w, http.StatusCreated, worker)
 }
 
-func handleGetWorker(w http.ResponseWriter, r *http.Request) {
+func handleGetTerminal(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	worker, err := GetWorker(id)
+	worker, err := GetTerminal(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -150,18 +151,9 @@ func handleGetWorker(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, worker)
 }
 
-func handleDeleteWorker(w http.ResponseWriter, r *http.Request) {
+func handleDeleteTerminal(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := DeleteWorker(id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func handleStartWorker(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	worker, err := StartWorker(id)
+	worker, err := GetTerminal(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -170,48 +162,91 @@ func handleStartWorker(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "worker '"+id+"' not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, worker)
-}
 
-func handleStopWorker(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	worker, err := StopWorker(id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if worker == nil {
-		writeError(w, http.StatusNotFound, "worker '"+id+"' not found")
-		return
-	}
-	writeJSON(w, http.StatusOK, worker)
-}
-
-func handleRestartWorker(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if _, err := StopWorker(id); err != nil {
-		// Allow restart even if stop fails; worker might already be stopped
-		log.Printf("[restart] stop worker %s: %v", id, err)
-	}
-	worker, err := StartWorker(id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError,
-			"restart failed: "+err.Error())
-		return
-	}
-	if worker == nil {
-		writeError(w, http.StatusNotFound, "worker '"+id+"' not found")
-		return
-	}
-
-	// Fire-and-forget RPyC readiness wait — the UI will poll status.
 	go func(wid string) {
+		if err := DeleteTerminal(wid); err != nil {
+			log.Printf("[delete] worker %s delete failed: %v", wid, err)
+		}
+	}(id)
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "deleting"})
+}
+
+func handleStartTerminal(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	worker, err := GetTerminal(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if worker == nil {
+		writeError(w, http.StatusNotFound, "worker '"+id+"' not found")
+		return
+	}
+
+	if worker.Status != StatusRunning && worker.Status != StatusStarting {
+		go func(wid string) {
+			if _, err := StartTerminal(wid); err != nil {
+				log.Printf("[start] worker %s start failed: %v", wid, err)
+				SetTerminalError(wid, err.Error())
+				return
+			}
+			if err := WaitForRPyCReady(wid, 90*time.Second); err != nil {
+				log.Printf("[start] worker %s started but RPyC not ready yet: %v", wid, err)
+				SetTerminalError(wid, err.Error())
+			}
+		}(id)
+		worker.Status = StatusStarting
+	}
+
+	writeJSON(w, http.StatusAccepted, worker)
+}
+
+func handleStopTerminal(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	worker, err := StopTerminal(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if worker == nil {
+		writeError(w, http.StatusNotFound, "worker '"+id+"' not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, worker)
+}
+
+func handleRestartTerminal(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	worker, err := GetTerminal(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if worker == nil {
+		writeError(w, http.StatusNotFound, "worker '"+id+"' not found")
+		return
+	}
+
+	go func(wid string) {
+		if _, err := StopTerminal(wid); err != nil {
+			// Allow restart even if stop fails; worker might already be stopped.
+			log.Printf("[restart] stop worker %s: %v", wid, err)
+		}
+		if _, err := StartTerminal(wid); err != nil {
+			log.Printf("[restart] worker %s start failed: %v", wid, err)
+			SetTerminalError(wid, err.Error())
+			return
+		}
 		if err := WaitForRPyCReady(wid, 90*time.Second); err != nil {
 			log.Printf("[restart] worker %s started but RPyC not ready yet: %v", wid, err)
+			SetTerminalError(wid, err.Error())
 		}
 	}(worker.ID)
 
-	writeJSON(w, http.StatusOK, worker)
+	worker.Status = StatusStarting
+
+	writeJSON(w, http.StatusAccepted, worker)
 }
 
 func handleRefreshDisplay(w http.ResponseWriter, r *http.Request) {
@@ -255,9 +290,9 @@ func handleRotateToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, worker)
 }
 
-func handleGetWorkerLogs(w http.ResponseWriter, r *http.Request) {
+func handleGetTerminalLogs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	writeJSON(w, http.StatusOK, GetWorkerLogs(id))
+	writeJSON(w, http.StatusOK, GetTerminalLogs(id))
 }
 
 // ── Metrics ────────────────────────────────────────────────────────────────────
@@ -270,7 +305,7 @@ type systemMetrics struct {
 	DiskTotalMB int64          `json:"disk_total_mb"`
 	DiskUsedMB  int64          `json:"disk_used_mb"`
 	DiskPercent float64        `json:"disk_percent"`
-	Workers     []workerMetric `json:"workers"`
+	Terminals     []workerMetric `json:"workers"`
 }
 
 type workerMetric struct {
@@ -361,13 +396,10 @@ func readMemInfo() (totalMB, usedMB int64, pct float64) {
 }
 
 func readDiskUsage(path string) (totalMB, usedMB int64, pct float64) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
+	totalB, usedB, err := diskUsageBytes(path)
+	if err != nil {
 		return 0, 0, 0
 	}
-	totalB := stat.Blocks * uint64(stat.Bsize)
-	freeB := stat.Bfree * uint64(stat.Bsize)
-	usedB := totalB - freeB
 	totalMB = int64(totalB / (1024 * 1024))
 	usedMB = int64(usedB / (1024 * 1024))
 	if totalB > 0 {
@@ -460,7 +492,7 @@ func handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	memTotal, memUsed, memPct := readMemInfo()
 	diskTotal, diskUsed, diskPct := readDiskUsage(fleetDir)
 
-	workers, _ := ListWorkers()
+	workers, _ := ListTerminals()
 	wm := make([]workerMetric, 0, len(workers))
 	for _, wk := range workers {
 		var rss float64
@@ -507,7 +539,7 @@ func handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		DiskTotalMB: diskTotal,
 		DiskUsedMB:  diskUsed,
 		DiskPercent: math.Round(diskPct*10) / 10,
-		Workers:     wm,
+		Terminals:     wm,
 	})
 }
 
@@ -519,7 +551,7 @@ func handleGetEngineLogs(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, lines)
 }
 
-func handleRenameWorker(w http.ResponseWriter, r *http.Request) {
+func handleRenameTerminal(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
 		Name string `json:"name"`
@@ -531,9 +563,13 @@ func handleRenameWorker(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name must be 100 characters or fewer")
 		return
 	}
-	worker, err := RenameWorker(id, body.Name)
+	worker, err := RenameTerminal(id, body.Name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		if strings.Contains(err.Error(), "already exists") {
+			writeError(w, http.StatusConflict, err.Error())
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
 		return
 	}
 	if worker == nil {
@@ -562,9 +598,9 @@ func vncProxy(localPort int) http.Handler {
 	return rp
 }
 
-func handleVNCWorker(w http.ResponseWriter, r *http.Request) {
+func handleVNCTerminal(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	worker, err := GetWorker(id)
+	worker, err := GetTerminal(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -595,31 +631,31 @@ func main() {
 
 	// Reset stale worker state from a previous container lifecycle.
 	cleanStaleState()
-	startWorkerSupervisor()
+	startTerminalSupervisor()
 
 	port := envOr("PORT", "18810")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("GET /status", handleStatus)
-	mux.HandleFunc("GET /workers", handleListWorkers)
-	mux.HandleFunc("POST /workers", handleCreateWorker)
-	mux.HandleFunc("GET /workers/{id}", handleGetWorker)
-	mux.HandleFunc("DELETE /workers/{id}", handleDeleteWorker)
-	mux.HandleFunc("POST /workers/{id}/start", handleStartWorker)
-	mux.HandleFunc("POST /workers/{id}/stop", handleStopWorker)
-	mux.HandleFunc("POST /workers/{id}/restart", handleRestartWorker)
+	mux.HandleFunc("GET /workers", handleListTerminals)
+	mux.HandleFunc("POST /workers", handleCreateTerminal)
+	mux.HandleFunc("GET /workers/{id}", handleGetTerminal)
+	mux.HandleFunc("DELETE /workers/{id}", handleDeleteTerminal)
+	mux.HandleFunc("POST /workers/{id}/start", handleStartTerminal)
+	mux.HandleFunc("POST /workers/{id}/stop", handleStopTerminal)
+	mux.HandleFunc("POST /workers/{id}/restart", handleRestartTerminal)
 	mux.HandleFunc("PATCH /workers/{id}/config", handleUpdateConfig)
-	mux.HandleFunc("PATCH /workers/{id}/name", handleRenameWorker)
-	mux.HandleFunc("GET /workers/{id}/logs", handleGetWorkerLogs)
+	mux.HandleFunc("PATCH /workers/{id}/name", handleRenameTerminal)
+	mux.HandleFunc("GET /workers/{id}/logs", handleGetTerminalLogs)
 	mux.HandleFunc("POST /workers/{id}/rotate-token", handleRotateToken)
 	mux.HandleFunc("POST /workers/{id}/refresh-display", handleRefreshDisplay)
 	mux.HandleFunc("GET /logs", handleGetEngineLogs)
 	mux.HandleFunc("GET /metrics", handleMetrics)
-	mux.HandleFunc("/vnc/workers/{id}", handleVNCWorker)
+	mux.HandleFunc("/vnc/workers/{id}", handleVNCTerminal)
 	mux.HandleFunc("/vnc/installer", handleVNCInstaller)
 
-	log.Printf("mt5-fleet engine control API listening on :%s", port)
+	log.Printf("my5fleet engine control API listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatal(err)
 	}
