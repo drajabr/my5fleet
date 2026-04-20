@@ -11,6 +11,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -49,6 +51,69 @@ func main() {
 		r.URL.Path = "/"
 		r.URL.RawPath = ""
 		installerVNCProxy.ServeHTTP(w, r)
+	})
+
+	// Dedicated worker noVNC WebSocket path: /api/vnc/workers/{id}
+	// Fetch the worker's websockify port from the engine, then proxy directly.
+	// This reduces latency vs routing through the engine's control-api VNC handler.
+	mux.HandleFunc("/api/vnc/workers/", func(w http.ResponseWriter, r *http.Request) {
+		workerId := strings.TrimPrefix(r.URL.Path, "/api/vnc/workers/")
+		if workerId == "" {
+			http.NotFound(w, r)
+			return
+		}
+		// Query the engine to get the worker's port and websockify port.
+		resp, err := http.Get(engineURL + "/workers/" + url.QueryEscape(workerId))
+		if err != nil {
+			log.Printf("worker lookup failed for %s: %v", workerId, err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]string{"detail": "worker lookup failed: " + err.Error()})
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("worker %s not found or error: %d", workerId, resp.StatusCode)
+			w.WriteHeader(resp.StatusCode)
+			w.Header().Set("Content-Type", "application/json")
+			io.Copy(w, resp.Body) //nolint:errcheck
+			return
+		}
+
+		var workerInfo struct {
+			Port      int `json:"port"`
+			VNCWSPort int `json:"vnc_ws_port"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&workerInfo); err != nil {
+			log.Printf("failed to parse worker info: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"detail": "failed to parse worker info"})
+			return
+		}
+
+		if workerInfo.Port == 0 || workerInfo.VNCWSPort == 0 {
+			log.Printf("worker %s has no port or VNC port assigned", workerId)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"detail": "worker has no port or VNC port assigned"})
+			return
+		}
+
+		// Compute the container-local websockify port.
+		// Formula: vncWSLocalBase + (worker.Port - basePort) where:
+		//   vncWSLocalBase = 6800 (engine/control_api/manager.go)
+		//   basePort = 18812 (engine/control_api/manager.go)
+		// Proxy directly to websockify on the engine container.
+		const vncWSLocalBase = 6800
+		const basePort = 18812
+		localWSPort := vncWSLocalBase + (workerInfo.Port - basePort)
+		workerVNCURL := &url.URL{Scheme: "http", Host: fmt.Sprintf("engine:%d", localWSPort)}
+		workerVNCProxy := buildProxy(workerVNCURL)
+		r.URL.Path = "/"
+		r.URL.RawPath = ""
+		workerVNCProxy.ServeHTTP(w, r)
 	})
 
 	// /api/* → engine (strip the /api prefix before forwarding)

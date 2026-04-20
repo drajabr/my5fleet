@@ -117,15 +117,20 @@ let _logHeight = parseInt(localStorage.getItem(LOG_H_KEY), 10) || 180;
 let _workerVncId = null;
 let _workerRfb = null;
 let _workerRetryTimer = null;
+let _installerRetryTimer = null;
 let _rfbClassPromise = null;
 let _status = null;
 let _selectedWorkerStatus = null;
 let _activeQuickPicker = null;
 let _installerRfb = null;
 let _activeLogTab = localStorage.getItem(LOG_TAB_KEY) || 'system';
+let _referenceActionBusy = false;
+let _referenceRebuildArmed = false;
+let _referenceRebuildTimer = null;
 
+// Default to no selection - installer/reference display shows by default during setup
 if (!_selectedId) {
-  _selectedId = REFERENCE_TERMINAL_ID;
+  _selectedId = null;
 }
 
 const ACCENT_PRESETS = [
@@ -208,12 +213,23 @@ async function getRFBClass() {
 
 function _clearRetryTimers() {
   if (_workerRetryTimer) { clearTimeout(_workerRetryTimer); _workerRetryTimer = null; }
+  if (_installerRetryTimer) { clearTimeout(_installerRetryTimer); _installerRetryTimer = null; }
 }
 
 function disconnectTerminalVNC() {
   if (_workerRetryTimer) { clearTimeout(_workerRetryTimer); _workerRetryTimer = null; }
   _workerRfb = null;
   _workerVncId = null;
+}
+
+async function isVNCPathReady(path) {
+  try {
+    const res = await fetch(path, { method: 'GET', cache: 'no-store' });
+    // websockify returns 400/405 for plain HTTP requests when ready.
+    return res.status < 500;
+  } catch (_) {
+    return false;
+  }
 }
 
 // Trigger noVNC to recalculate its scaling to match the container size.
@@ -232,6 +248,23 @@ async function connectTerminalVNC(workerId) {
   if (!workerId) return;
   const target = document.getElementById('vnc-screen');
   if (!target) return;
+
+  const ready = await isVNCPathReady(`/api/vnc/workers/${encodeURIComponent(workerId)}`);
+  if (!ready) {
+    const placeholder = document.getElementById('vnc-placeholder');
+    if (placeholder) {
+      placeholder.style.display = 'flex';
+      placeholder.innerHTML = '<div class="placeholder-title">Terminal display is starting…</div><div class="placeholder-sub">noVNC will connect when the session is ready.</div>';
+    }
+    if (_workerRetryTimer) clearTimeout(_workerRetryTimer);
+    _workerRetryTimer = setTimeout(() => {
+      const selected = getTerminalById(_selectedId);
+      if (selected && selected.id === workerId && selected.status === 'running') {
+        connectTerminalVNC(workerId);
+      }
+    }, 1500);
+    return;
+  }
 
   disconnectTerminalVNC();
   _installerRfb = null;
@@ -258,12 +291,25 @@ function syncSelectedTerminalView() {
 
   const w = _selectedId ? getTerminalById(_selectedId) : null;
 
-  // No worker selected, or worker is stopped/errored → show installer desktop
-  if (!w || (w.status !== 'running' && w.status !== 'starting')) {
-    disconnectTerminalVNC();
-    _selectedWorkerStatus = w ? w.status : null;
+  if (_selectedId === REFERENCE_TERMINAL_ID) {
+    _selectedWorkerStatus = null;
     if (!document.getElementById('vnc-iframe-installer')) {
       connectInstallerVNC();
+    }
+    return;
+  }
+
+  // No worker selected, or worker is stopped/errored → keep placeholder.
+  if (!w || w.status !== 'running') {
+    disconnectTerminalVNC();
+    _selectedWorkerStatus = w ? w.status : null;
+    disconnectInstallerVNC();
+    if (w && (w.status === 'starting' || w.status === 'stopping')) {
+      placeholder.style.display = 'flex';
+      placeholder.innerHTML = '<div class="placeholder-title">Terminal is transitioning…</div><div class="placeholder-sub">Connection will start once it is running.</div>';
+    } else {
+      placeholder.style.display = 'flex';
+      placeholder.innerHTML = '<div class="placeholder-title">Select a terminal to connect</div><div class="placeholder-sub">Reference and worker displays connect only when ready.</div>';
     }
     return;
   }
@@ -301,7 +347,7 @@ async function fetchTerminals() {
     _status = await api('GET', 'status');
     _workers = await api('GET', 'workers');
     const displayTerminals = getDisplayTerminals();
-    const hasSelected = !!_selectedId && displayTerminals.some(w => w.id === _selectedId);
+    const hasSelected = !!_selectedId && (_selectedId === REFERENCE_TERMINAL_ID || displayTerminals.some(w => w.id === _selectedId));
     if (!hasSelected && displayTerminals.length) {
       selectTerminal(displayTerminals[0].id);
       return;
@@ -335,7 +381,7 @@ const STATUS_COLOR = {
 function renderList() {
   const list = document.getElementById('worker-list');
   const displayTerminals = getDisplayTerminals();
-  const sig = _selectedId + '|' + _addingTerminal + '|' + _editingId + '|' + JSON.stringify(displayTerminals.map(w => [w.id, w.name, w.status, w.port, w.config]));
+  const sig = _selectedId + '|' + _addingTerminal + '|' + _editingId + '|' + _referenceActionBusy + '|' + _referenceRebuildArmed + '|' + JSON.stringify([_status?.status, _status?.reference_status, _status?.reference_running, _status?.installed, _status?.reference_installing]) + '|' + JSON.stringify(displayTerminals.map(w => [w.id, w.name, w.status, w.port, w.config]));
   if (sig === _lastRenderSig) return;
   _lastRenderSig = sig;
   let html = renderReferenceRow();
@@ -353,27 +399,6 @@ function renderList() {
     const formEl = document.getElementById('inline-add-form');
     if (formEl) formEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
-}
-
-function renderReferenceRow() {
-  const isSelected = _selectedId === REFERENCE_TERMINAL_ID;
-  return `
-  <li class="worker-row${isSelected ? ' selected' : ''}" id="row-reference"
-      onclick="selectTerminal('${REFERENCE_TERMINAL_ID}')">
-    <div class="row-top">
-      <span class="status-dot status-dot--ok"></span>
-      <span class="row-name" title="${esc(REFERENCE_TERMINAL_NAME)}">${esc(REFERENCE_TERMINAL_NAME)}</span>
-      <div class="row-actions" onclick="event.stopPropagation()">
-        <button class="icon-btn icon-btn--square btn-ghost" type="button" disabled title="Pinned entry (cannot edit/delete/use as worker)">PIN</button>
-      </div>
-    </div>
-    <div class="row-bottom">
-      <div class="row-metrics">
-        <span class="row-metric">Pinned install workspace</span>
-      </div>
-      <span class="row-port">:99</span>
-    </div>
-  </li>`;
 }
 
 function nextDefaultName() {
@@ -540,6 +565,60 @@ function renderRow(w) {
   </li>`;
 }
 
+function referenceStatusMeta() {
+  const installing = !!(_status && (_status.reference_installing || _status.status === 'installing'));
+  const installed = !!(_status && (_status.reference_installed ?? _status.installed));
+  const running = !!(_status && _status.reference_running);
+  let status = (_status && _status.reference_status) || 'unknown';
+  if (installing) status = 'installing';
+  if (!installed && !installing) status = 'not_installed';
+  const color = installing
+    ? 'var(--yellow)'
+    : running
+      ? 'var(--green)'
+      : installed
+        ? 'var(--grey)'
+        : 'var(--red)';
+  return { installing, installed, running, status, color };
+}
+
+function renderReferenceRow() {
+  const isSelected = _selectedId === REFERENCE_TERMINAL_ID;
+  const st = referenceStatusMeta();
+  const startStopIcon = st.running ? icon('close') : icon('open');
+  const startStopTitle = st.running ? 'Stop reference terminal' : 'Start reference terminal';
+  const startStopDisabled = _referenceActionBusy || st.installing || !st.installed;
+  const rebuildDisabled = _referenceActionBusy || st.installing;
+  const rebuildClass = _referenceRebuildArmed ? 'btn-warning btn-delete--armed' : 'btn-warning';
+  const statusText = st.installing
+    ? 'Installing'
+    : st.running
+      ? 'Running'
+      : st.installed
+        ? 'Stopped'
+        : 'Not installed';
+
+  return `
+  <li class="worker-row worker-row--reference${isSelected ? ' selected' : ''}" id="row-reference"
+      onclick="selectTerminal('${REFERENCE_TERMINAL_ID}')">
+    <div class="row-top">
+      <span class="status-dot" style="background:${st.color}"></span>
+      <span class="row-name" title="${esc(REFERENCE_TERMINAL_NAME)}">${esc(REFERENCE_TERMINAL_NAME)}</span>
+      <div class="row-actions" onclick="event.stopPropagation()">
+        <button class="icon-btn icon-btn--square btn-primary" title="${startStopTitle}" aria-label="${startStopTitle}" onclick="toggleReferenceTerminal()" ${startStopDisabled ? 'disabled' : ''}>${startStopIcon}</button>
+        <button class="icon-btn icon-btn--square ${rebuildClass}" id="ref-rebuild-btn" title="Rebuild reference (double-click to confirm)" aria-label="Rebuild reference" onclick="rebuildReferenceTerminal(this)" ${rebuildDisabled ? 'disabled' : ''}>${icon('restart')}</button>
+      </div>
+    </div>
+    <div class="row-bottom">
+      <div class="row-metrics">
+        <span class="row-metric">Status <b>${esc(statusText)}</b></span>
+        <span class="row-metric">Installed <b>${st.installed ? 'Yes' : 'No'}</b></span>
+      </div>
+      <span class="row-port">:99</span>
+    </div>
+  </li>`;
+}
+
 // ── Terminal selection + VNC ────────────────────────────────────────────────────
 function selectTerminal(id) {
   _selectedId = id;
@@ -561,17 +640,21 @@ function selectTerminal(id) {
   if (!w) {
     disconnectTerminalVNC();
     _workerVncId = null;
+    disconnectInstallerVNC();
     if (screen) screen.innerHTML = '';
     placeholder.style.display = 'flex';
+    placeholder.innerHTML = '<div class="placeholder-title">Select a terminal to connect</div><div class="placeholder-sub">Reference and worker displays connect only when ready.</div>';
     stopLogPolling();
     return;
   }
   switchLogTab('worker');
-  if (w.status !== 'running' && w.status !== 'starting') {
-    // stopped/error → show installer desktop, don't connect worker VNC
+  if (w.status !== 'running') {
+    // Not running yet → no worker VNC connection attempt.
     disconnectTerminalVNC();
     _workerVncId = null;
-    connectInstallerVNC();
+    disconnectInstallerVNC();
+    placeholder.style.display = 'flex';
+    placeholder.innerHTML = '<div class="placeholder-title">Terminal is not running</div><div class="placeholder-sub">Start or restart it, then connection will begin when ready.</div>';
     return;
   }
   _workerVncId = id;
@@ -693,6 +776,75 @@ async function restartTerminal(id) {
     switchLogTab('system');
   } catch (e) { toast(e.message, true); }
   finally { if (btn) { btn.disabled = false; btn.innerHTML = icon('restart'); } }
+}
+
+function clearReferenceRebuildArmed() {
+  _referenceRebuildArmed = false;
+  if (_referenceRebuildTimer) {
+    clearTimeout(_referenceRebuildTimer);
+    _referenceRebuildTimer = null;
+  }
+  _lastRenderSig = '';
+  renderList();
+}
+
+async function toggleReferenceTerminal() {
+  if (_referenceActionBusy) return;
+  const st = referenceStatusMeta();
+  if (!st.installed || st.installing) {
+    toast('Reference terminal is not ready for start/stop yet.', true);
+    return;
+  }
+  _referenceActionBusy = true;
+  _lastRenderSig = '';
+  renderList();
+  try {
+    if (st.running) {
+      await api('POST', 'reference/stop');
+      toast('Reference terminal stopping…');
+    } else {
+      await api('POST', 'reference/start');
+      toast('Reference terminal starting…');
+    }
+    await fetchTerminals();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    _referenceActionBusy = false;
+    _lastRenderSig = '';
+    renderList();
+  }
+}
+
+async function rebuildReferenceTerminal(btn) {
+  if (_referenceActionBusy) return;
+  if (!_referenceRebuildArmed) {
+    _referenceRebuildArmed = true;
+    _referenceRebuildTimer = setTimeout(clearReferenceRebuildArmed, 3000);
+    _lastRenderSig = '';
+    renderList();
+    toast('Click rebuild again within 3s to confirm.');
+    return;
+  }
+  clearReferenceRebuildArmed();
+  _referenceActionBusy = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = icon('spinner');
+  }
+  try {
+    await api('POST', 'reference/rebuild');
+    toast('Reference rebuild started…');
+    _selectedId = null;
+    localStorage.removeItem(SELECTED_KEY);
+    await fetchTerminals();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    _referenceActionBusy = false;
+    _lastRenderSig = '';
+    renderList();
+  }
 }
 
 let _deleteArmed = null;
@@ -1056,11 +1208,16 @@ async function fetchMetrics() {
     _metrics = await api('GET', 'metrics');
     renderHeaderMetrics();
     renderList(); // re-render to update per-worker metrics
-    const hasSelected = _selectedId === REFERENCE_TERMINAL_ID || (!!_selectedId && displayTerminals.some(w => w.id === _selectedId));
-    if (!hasSelected) {
-      selectTerminal(REFERENCE_TERMINAL_ID);
+    pulseEngineDot();
+  } catch (e) {
+    console.warn('fetchMetrics failed:', e);
   }
 }
+
+function startMetricsPolling() {
+  if (_metricsTimer) return;
+  fetchMetrics();
+  _metricsTimer = setInterval(fetchMetrics, 5000);
 }
 
 function fmtPct(v) { return v != null ? v.toFixed(1) + '%' : '—'; }
@@ -1139,7 +1296,7 @@ function switchLogTab(tab) {
   stopLogPolling();
   if (tab === 'system') {
     startEngineLogs();
-  } else if (_selectedId) {
+  } else if (_selectedId && _selectedId !== REFERENCE_TERMINAL_ID) {
     startLogPolling(_selectedId);
   } else {
     document.getElementById('log-lines').innerHTML =
@@ -1151,9 +1308,26 @@ function switchLogTab(tab) {
 async function connectInstallerVNC() {
   const target = document.getElementById('vnc-screen');
   if (!target) return;
+
+  const placeholder = document.getElementById('vnc-placeholder');
+  const expectedReady = !!(_status && (_status.installer_vnc_ready || _status.reference_installing || _status.status === 'ready'));
+  const endpointReady = expectedReady ? await isVNCPathReady('/api/vnc/installer') : false;
+  if (!endpointReady) {
+    disconnectInstallerVNC();
+    if (placeholder) {
+      placeholder.style.display = 'flex';
+      placeholder.innerHTML = '<div class="placeholder-title">Reference display is not ready yet</div><div class="placeholder-sub">noVNC will connect automatically once it is ready.</div>';
+    }
+    if (_installerRetryTimer) clearTimeout(_installerRetryTimer);
+    _installerRetryTimer = setTimeout(() => {
+      if (_selectedId === REFERENCE_TERMINAL_ID) connectInstallerVNC();
+    }, 1500);
+    return;
+  }
+
   disconnectTerminalVNC();
   target.innerHTML = '';
-  document.getElementById('vnc-placeholder').style.display = 'none';
+  if (placeholder) placeholder.style.display = 'none';
 
   const encrypt = location.protocol === 'https:';
   const wsPath = '/api/vnc/installer';
@@ -1169,6 +1343,7 @@ async function connectInstallerVNC() {
 }
 
 function disconnectInstallerVNC() {
+  if (_installerRetryTimer) { clearTimeout(_installerRetryTimer); _installerRetryTimer = null; }
   _installerRfb = null;
   const target = document.getElementById('vnc-screen');
   if (target) target.innerHTML = '';
@@ -1218,12 +1393,16 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 async function waitForEngine() {
   setAddTerminalEnabled(false);
   startEngineLogs();
-  connectInstallerVNC();
+  // Keep sidebar content visible during installation/startup.
+  _lastRenderSig = '';
+  renderList();
   const pillText = document.getElementById('engine-pill-text');
   for (;;) {
     try {
       const s = await api('GET', 'status');
       _status = s;
+      _lastRenderSig = '';
+      renderList();
       if (s.status === 'ready') {
         setEngineBadge('ready');
         if (pillText) pillText.textContent = 'v1.0';

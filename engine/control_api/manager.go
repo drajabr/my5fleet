@@ -770,6 +770,19 @@ func StartTerminal(id string) (*Terminal, error) {
 		return nil, fmt.Errorf("worker dir check failed for %s: %w", id, err)
 	}
 
+	// ── Configure Wine X11 driver before MT5 launch ──────────────────────────
+	// Remove Wine decorations (title bar, borders) so bspwm manages the window completely.
+	regCmd1 := exec.Command("wine", "reg", "add", "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver", "/v", "Managed", "/t", "REG_SZ", "/d", "Y", "/f")
+	regCmd1.Env = env
+	_ = regCmd1.Run()
+	regCmd2 := exec.Command("wine", "reg", "add", "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver", "/v", "Decorated", "/t", "REG_SZ", "/d", "N", "/f")
+	regCmd2.Env = env
+	_ = regCmd2.Run()
+	// Flush Wine server to apply registry changes
+	wineserverCmd := exec.Command("wineserver", "-w")
+	wineserverCmd.Env = env
+	_ = wineserverCmd.Run()
+
 	termCmd := exec.Command("wine", winMT5Path, "/portable")
 	termCmd.Dir = workerDir
 	termCmd.Env = env

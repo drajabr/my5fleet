@@ -448,6 +448,37 @@ class MT5Service(rpyc.Service):
     ) -> float:
         return mt5.order_calc_profit(action, symbol, volume, price_open, price_close)
 
+    def exposed_constants(self, names=None) -> dict:
+        default_names = [
+            "DEAL_ENTRY_IN",
+            "DEAL_ENTRY_OUT",
+            "DEAL_ENTRY_INOUT",
+            "DEAL_ENTRY_OUT_BY",
+            "ORDER_FILLING_FOK",
+            "ORDER_FILLING_IOC",
+            "ORDER_FILLING_RETURN",
+            "ORDER_TIME_DAY",
+            "ORDER_TIME_GTC",
+            "ORDER_TYPE_BUY",
+            "ORDER_TYPE_SELL",
+            "ORDER_TYPE_BUY_LIMIT",
+            "ORDER_TYPE_SELL_LIMIT",
+            "TRADE_ACTION_DEAL",
+            "TRADE_ACTION_PENDING",
+            "TRADE_ACTION_REMOVE",
+            "TRADE_RETCODE_DONE",
+            "TRADE_RETCODE_DONE_PARTIAL",
+            "TRADE_RETCODE_PLACED",
+        ]
+        requested = default_names if names is None else names
+        result = {}
+        for name in requested:
+            if hasattr(mt5, name):
+                value = getattr(mt5, name)
+                if isinstance(value, (bool, int, float, str)):
+                    result[name] = value
+        return result
+
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():

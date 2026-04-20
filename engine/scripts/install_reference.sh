@@ -51,8 +51,9 @@ wine reg add "HKEY_CURRENT_USER\\Software\\Wine" /v Version /t REG_SZ /d "win10"
 wineserver -w 2>/dev/null || true
 
 # -- 1c. Let WM manage Wine windows ------------------------------------------
-echo "[install] Configuring Wine X11 driver (Managed=Y) ..."
+echo "[install] Configuring Wine X11 driver (Managed=Y, no decorations) ..."
 wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" /v Managed /t REG_SZ /d "Y" /f 2>/dev/null || true
+wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" /v Decorated /t REG_SZ /d "N" /f 2>/dev/null || true
 wineserver -w 2>/dev/null || true
 
 # -- 2. Install MetaTrader 5 --------------------------------------------------

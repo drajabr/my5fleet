@@ -13,5 +13,11 @@ bspc config gapless_monocle       true
 bspc config focus_follows_pointer false
 bspc config pointer_follows_focus true
 
+# Window rules: Main application windows should tile and fill the display.
+# Wine Terminal windows display at full screen with no decorations.
+# Dialogs and popups are handled by Wine's Decorated=N setting.
+# Rule order: more specific rules first, general rules last.
+bspc rule -a 'wine' -o state=tiled
+
 # Do not force every window into tiled state. Wine transient dialogs
 # (login prompts, confirmations) must remain focusable/visible.

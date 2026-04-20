@@ -1,15 +1,18 @@
 ﻿package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -96,10 +99,110 @@ func handleStatus(w http.ResponseWriter, _ *http.Request) {
 		status = "ready"
 	}
 
+	refProgramStatus := supervisorProgramStatus("reference-mt5")
+	referenceRunning := refProgramStatus == "RUNNING"
+	vncReady := isTCPPortReady("127.0.0.1", installerWSPort, 300*time.Millisecond)
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"installed": ready,
-		"status":    status,
+		"installed":            ready,
+		"status":               status,
+		"reference_installed":  ready,
+		"reference_installing": installing,
+		"reference_running":    referenceRunning,
+		"reference_status":     strings.ToLower(refProgramStatus),
+		"installer_vnc_ready":  vncReady,
 	})
+}
+
+func isTCPPortReady(host string, port int, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+func supervisorProgramStatus(program string) string {
+	cmd := exec.Command("supervisorctl", "status", program)
+	out, err := cmd.CombinedOutput()
+	if err != nil && len(out) == 0 {
+		return "UNKNOWN"
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) < 2 {
+		return "UNKNOWN"
+	}
+	return strings.ToUpper(fields[1])
+}
+
+func supervisorAction(action, program string) (string, error) {
+	cmd := exec.Command("supervisorctl", action, program)
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		return text, fmt.Errorf("supervisorctl %s %s failed: %w (%s)", action, program, err, text)
+	}
+	return text, nil
+}
+
+func handleReferenceStart(w http.ResponseWriter, _ *http.Request) {
+	referenceBinary := filepath.Join(referenceDir, "terminal64.exe")
+	if _, err := os.Stat(referenceBinary); err != nil {
+		writeError(w, http.StatusConflict, "reference terminal is not installed yet")
+		return
+	}
+
+	out, err := supervisorAction("start", "reference-mt5")
+	if err != nil && !strings.Contains(strings.ToLower(out), "already started") {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "starting"})
+}
+
+func handleReferenceStop(w http.ResponseWriter, _ *http.Request) {
+	out, err := supervisorAction("stop", "reference-mt5")
+	if err != nil {
+		lower := strings.ToLower(out)
+		if !strings.Contains(lower, "not running") && !strings.Contains(lower, "no such process") {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopped"})
+}
+
+func handleReferenceRebuild(w http.ResponseWriter, _ *http.Request) {
+	// Stop the reference runtime and installer before resetting artifacts.
+	_, _ = supervisorAction("stop", "reference-mt5")
+	_, _ = supervisorAction("stop", "reference-install")
+
+	pyDir := filepath.Dir(winPython)
+	lockFile := filepath.Join(fleetDir, "reference", ".installing")
+
+	if err := os.RemoveAll(referenceDir); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to clear reference install: "+err.Error())
+		return
+	}
+	if err := os.RemoveAll(pyDir); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to clear embedded Python: "+err.Error())
+		return
+	}
+	_ = os.Remove(lockFile)
+
+	if _, err := supervisorAction("start", "reference-install"); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := supervisorAction("start", "reference-mt5"); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "rebuilding"})
 }
 
 func handleListTerminals(w http.ResponseWriter, _ *http.Request) {
@@ -560,11 +663,81 @@ func handleMetrics(w http.ResponseWriter, _ *http.Request) {
 }
 
 func handleGetEngineLogs(w http.ResponseWriter, _ *http.Request) {
+	files := []struct {
+		path   string
+		prefix string
+	}{
+		{path: "/var/log/supervisor/control-api.out.log", prefix: "[control-api]"},
+		{path: "/var/log/supervisor/control-api.err.log", prefix: "[control-api][err]"},
+		{path: "/var/log/supervisor/reference-install.out.log", prefix: "[reference-install]"},
+		{path: "/var/log/supervisor/reference-install.err.log", prefix: "[reference-install][err]"},
+		{path: "/var/log/supervisor/reference-mt5.out.log", prefix: "[reference-mt5]"},
+		{path: "/var/log/supervisor/reference-mt5.err.log", prefix: "[reference-mt5][err]"},
+		{path: "/var/log/supervisor/reference-wm.out.log", prefix: "[reference-wm]"},
+		{path: "/var/log/supervisor/reference-wm.err.log", prefix: "[reference-wm][err]"},
+		{path: "/var/log/supervisor/reference-websockify.out.log", prefix: "[reference-websockify]"},
+		{path: "/var/log/supervisor/reference-websockify.err.log", prefix: "[reference-websockify][err]"},
+		{path: "/var/log/supervisor/reference-xvnc.out.log", prefix: "[reference-xvnc]"},
+		{path: "/var/log/supervisor/reference-xvnc.err.log", prefix: "[reference-xvnc][err]"},
+	}
+
+	lines := make([]string, 0, engineLogMax)
+	seen := make(map[string]struct{}, engineLogMax*2)
+	appendUnique := func(v string) {
+		if v == "" {
+			return
+		}
+		if _, ok := seen[v]; ok {
+			return
+		}
+		seen[v] = struct{}{}
+		lines = append(lines, v)
+	}
+
+	for _, f := range files {
+		for _, line := range tailFileLines(f.path, 80) {
+			appendUnique(fmt.Sprintf("%s %s", f.prefix, line))
+		}
+	}
+
 	engineLogMu.Lock()
-	lines := make([]string, len(engineLogRing))
-	copy(lines, engineLogRing)
+	ring := make([]string, len(engineLogRing))
+	copy(ring, engineLogRing)
 	engineLogMu.Unlock()
+
+	for _, line := range ring {
+		appendUnique(line)
+	}
+
+	if len(lines) > engineLogMax {
+		lines = lines[len(lines)-engineLogMax:]
+	}
 	writeJSON(w, http.StatusOK, lines)
+}
+
+func tailFileLines(path string, maxLines int) []string {
+	if maxLines <= 0 {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	buf := make([]string, 0, maxLines)
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if line == "" {
+			continue
+		}
+		buf = append(buf, line)
+		if len(buf) > maxLines {
+			buf = buf[1:]
+		}
+	}
+	return buf
 }
 
 func handleRenameTerminal(w http.ResponseWriter, r *http.Request) {
@@ -654,6 +827,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("GET /status", handleStatus)
+	mux.HandleFunc("POST /reference/start", handleReferenceStart)
+	mux.HandleFunc("POST /reference/stop", handleReferenceStop)
+	mux.HandleFunc("POST /reference/rebuild", handleReferenceRebuild)
 	mux.HandleFunc("GET /workers", handleListTerminals)
 	mux.HandleFunc("POST /workers", handleCreateTerminal)
 	mux.HandleFunc("GET /workers/{id}", handleGetTerminal)
