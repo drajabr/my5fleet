@@ -20,9 +20,38 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 )
 
+const apiLogMax = 500
+
+var (
+	apiLogMu   sync.Mutex
+	apiLogRing []string
+)
+
+type apiLogWriter struct{ inner io.Writer }
+
+func (w *apiLogWriter) Write(p []byte) (int, error) {
+	n, err := w.inner.Write(p)
+	for _, line := range strings.Split(string(p), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		apiLogMu.Lock()
+		apiLogRing = append(apiLogRing, line)
+		if len(apiLogRing) > apiLogMax {
+			apiLogRing = apiLogRing[len(apiLogRing)-apiLogMax:]
+		}
+		apiLogMu.Unlock()
+	}
+	return n, err
+}
+
 func main() {
+	log.SetOutput(&apiLogWriter{inner: os.Stderr})
+
 	engineURL := strings.TrimRight(envOr("ENGINE_URL", "http://engine:18810"), "/")
 	installerVNCURL := strings.TrimRight(envOr("INSTALLER_VNC_URL", "http://engine:6799"), "/")
 	frontendDir := envOr("FRONTEND_DIR", "./frontend")
@@ -43,6 +72,28 @@ func main() {
 	fs := spaFileServer(frontendDir)
 
 	mux := http.NewServeMux()
+
+	// Combined dashboard logs: api-local + engine-local streams.
+	mux.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
+		apiLines := getAPILogs()
+		engineLines := getEngineLogs(engineURL)
+
+		combined := make([]string, 0, apiLogMax)
+		for _, line := range engineLines {
+			combined = append(combined, "engine-local  | "+line)
+		}
+		for _, line := range apiLines {
+			combined = append(combined, "api-local     | "+line)
+		}
+		if len(combined) > apiLogMax {
+			combined = combined[len(combined)-apiLogMax:]
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(combined); err != nil {
+			log.Printf("encode combined logs failed: %v", err)
+		}
+	})
 
 	// Dedicated installer noVNC WebSocket path.
 	// This bypasses the engine control-api process and proxies directly to
@@ -130,13 +181,37 @@ func main() {
 	mux.Handle("/", fs)
 
 	log.Printf("my5fleet api listening :%s", port)
-	log.Printf("  proxy  /api/* → %s", engineURL)
-	log.Printf("  proxy  /api/vnc/installer → %s", installerVNCURL)
-	log.Printf("  static /      ← %s", frontendDir)
+	log.Printf("  proxy  /api/* -> %s", engineURL)
+	log.Printf("  proxy  /api/vnc/installer -> %s", installerVNCURL)
+	log.Printf("  static /      <- %s", frontendDir)
 
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func getAPILogs() []string {
+	apiLogMu.Lock()
+	defer apiLogMu.Unlock()
+	lines := make([]string, len(apiLogRing))
+	copy(lines, apiLogRing)
+	return lines
+}
+
+func getEngineLogs(engineURL string) []string {
+	res, err := http.Get(engineURL + "/logs")
+	if err != nil {
+		return []string{"failed to fetch engine logs: " + err.Error()}
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return []string{fmt.Sprintf("engine logs request failed: status=%d", res.StatusCode)}
+	}
+	var lines []string
+	if err := json.NewDecoder(res.Body).Decode(&lines); err != nil {
+		return []string{"failed to decode engine logs: " + err.Error()}
+	}
+	return lines
 }
 
 // buildProxy creates a reverse proxy that rewrites requests to the upstream host.

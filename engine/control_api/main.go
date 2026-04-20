@@ -424,7 +424,7 @@ type systemMetrics struct {
 	DiskTotalMB int64          `json:"disk_total_mb"`
 	DiskUsedMB  int64          `json:"disk_used_mb"`
 	DiskPercent float64        `json:"disk_percent"`
-	Terminals     []workerMetric `json:"workers"`
+	Terminals   []workerMetric `json:"workers"`
 }
 
 type workerMetric struct {
@@ -658,7 +658,7 @@ func handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		DiskTotalMB: diskTotal,
 		DiskUsedMB:  diskUsed,
 		DiskPercent: math.Round(diskPct*10) / 10,
-		Terminals:     wm,
+		Terminals:   wm,
 	})
 }
 
@@ -667,6 +667,7 @@ func handleGetEngineLogs(w http.ResponseWriter, _ *http.Request) {
 		path   string
 		prefix string
 	}{
+		{path: "/var/log/supervisor/supervisord.log", prefix: "[supervisord]"},
 		{path: "/var/log/supervisor/control-api.out.log", prefix: "[control-api]"},
 		{path: "/var/log/supervisor/control-api.err.log", prefix: "[control-api][err]"},
 		{path: "/var/log/supervisor/reference-install.out.log", prefix: "[reference-install]"},
@@ -890,4 +891,3 @@ func filteredEnv(overrides ...string) []string {
 	}
 	return append(filtered, overrides...)
 }
-
