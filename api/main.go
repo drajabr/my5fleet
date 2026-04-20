@@ -22,6 +22,7 @@ import (
 
 func main() {
 	engineURL := strings.TrimRight(envOr("ENGINE_URL", "http://engine:18810"), "/")
+	installerVNCURL := strings.TrimRight(envOr("INSTALLER_VNC_URL", "http://engine:6799"), "/")
 	frontendDir := envOr("FRONTEND_DIR", "./frontend")
 	port := envOr("PORT", "17380")
 
@@ -30,10 +31,25 @@ func main() {
 		log.Fatalf("invalid ENGINE_URL %q: %v", engineURL, err)
 	}
 
+	installerUpstream, err := url.Parse(installerVNCURL)
+	if err != nil {
+		log.Fatalf("invalid INSTALLER_VNC_URL %q: %v", installerVNCURL, err)
+	}
+
 	rp := buildProxy(upstream)
+	installerVNCProxy := buildProxy(installerUpstream)
 	fs := spaFileServer(frontendDir)
 
 	mux := http.NewServeMux()
+
+	// Dedicated installer noVNC WebSocket path.
+	// This bypasses the engine control-api process and proxies directly to
+	// websockify (:6799), which is started earlier by supervisord.
+	mux.HandleFunc("/api/vnc/installer", func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Path = "/"
+		r.URL.RawPath = ""
+		installerVNCProxy.ServeHTTP(w, r)
+	})
 
 	// /api/* → engine (strip the /api prefix before forwarding)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +66,7 @@ func main() {
 
 	log.Printf("my5fleet api listening :%s", port)
 	log.Printf("  proxy  /api/* → %s", engineURL)
+	log.Printf("  proxy  /api/vnc/installer → %s", installerVNCURL)
 	log.Printf("  static /      ← %s", frontendDir)
 
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
@@ -98,8 +115,13 @@ func spaFileServer(root string) http.Handler {
 				return
 			}
 			// Unknown route path → serve index.html so SPA router handles it.
+			w.Header().Set("Cache-Control", "no-store")
 			http.ServeFile(w, r, root+"/index.html")
 			return
+		}
+		if reqPath == "index.html" {
+			// Always fetch a fresh SPA shell after redeploys.
+			w.Header().Set("Cache-Control", "no-store")
 		}
 		fs.ServeHTTP(w, r)
 	})

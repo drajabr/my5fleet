@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"encoding/json"
@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// ── Engine log ring buffer ─────────────────────────────────────────────────────
+// â”€â”€ Engine log ring buffer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // All log.Printf calls are tee-d into this ring so the frontend can stream them.
 
 const engineLogMax = 500
@@ -43,7 +43,7 @@ func (w *engineLogWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// ── JSON helpers ───────────────────────────────────────────────────────────────
+// â”€â”€ JSON helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -66,23 +66,39 @@ func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
-// ── Handlers ───────────────────────────────────────────────────────────────────
+// â”€â”€ Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func handleStatus(w http.ResponseWriter, _ *http.Request) {
+	lockFile := filepath.Join(fleetDir, "reference", ".installing")
+	installing := false
+	if _, err := os.Stat(lockFile); err == nil {
+		installing = true
+	}
+
 	ready := false
-	referenceBinary := filepath.Join(referenceDir, "terminal64.exe")
-	if _, err := os.Stat(referenceBinary); err == nil {
-		if _, err := os.Stat(winPython); err == nil {
-			ready = true
+	if !installing {
+		referenceBinary := filepath.Join(referenceDir, "terminal64.exe")
+		if _, err := os.Stat(referenceBinary); err == nil {
+			if _, err := os.Stat(winPython); err == nil {
+				ready = true
+			}
 		}
 	}
+
+	status := "not_installed"
+	if installing {
+		status = "installing"
+	} else if ready {
+		status = "ready"
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"installed": ready,
-		"status":    map[bool]string{true: "ready", false: "not_installed"}[ready],
+		"status":    status,
 	})
 }
 
@@ -295,7 +311,7 @@ func handleGetTerminalLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, GetTerminalLogs(id))
 }
 
-// ── Metrics ────────────────────────────────────────────────────────────────────
+// â”€â”€ Metrics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 type systemMetrics struct {
 	CPUPercent  float64        `json:"cpu_percent"`
@@ -477,7 +493,7 @@ func pidCPUPercent(pid int) float64 {
 		return 0
 	}
 
-	// clock ticks → seconds (typically 100 Hz)
+	// clock ticks â†’ seconds (typically 100 Hz)
 	hz := uint64(100)
 	dticks := (utime + stime) - (prev.utime + prev.stime)
 	wallSec := float64(now-prev.wallNs) / 1e9
@@ -579,7 +595,7 @@ func handleRenameTerminal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, worker)
 }
 
-// ── VNC WebSocket proxy ────────────────────────────────────────────────────────
+// â”€â”€ VNC WebSocket proxy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Proxies WebSocket connections through the API so only one port is exposed.
 
 const installerWSPort = 6799
@@ -621,7 +637,7 @@ func handleVNCInstaller(w http.ResponseWriter, r *http.Request) {
 	vncProxy(installerWSPort).ServeHTTP(w, r)
 }
 
-// ── Main ───────────────────────────────────────────────────────────────────────
+// â”€â”€ Main â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 func main() {
 	initPaths()
@@ -698,3 +714,4 @@ func filteredEnv(overrides ...string) []string {
 	}
 	return append(filtered, overrides...)
 }
+

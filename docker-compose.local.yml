@@ -15,6 +15,8 @@ services:
       WORKER_PORT_RANGE_START: "19812"
       WORKER_PORT_RANGE_END: "19912"
     volumes:
+      - mt5-wineprefix-local:/my5fleet/wineprefix
+      - mt5-reference-local:/my5fleet/reference
       - mt5-workers-local:/my5fleet/workers
       - mt5-config-local:/my5fleet/config
     ports:
@@ -32,6 +34,7 @@ services:
     restart: unless-stopped
     environment:
       ENGINE_URL: "http://engine:18810"
+      INSTALLER_VNC_URL: "http://engine:6799"
     ports:
       - "17380:17380"
     networks:
@@ -40,6 +43,8 @@ services:
       - engine
 
 volumes:
+  mt5-wineprefix-local:
+  mt5-reference-local:
   mt5-workers-local:
   mt5-config-local:
 

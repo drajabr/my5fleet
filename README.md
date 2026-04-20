@@ -13,9 +13,9 @@ Run multiple isolated MetaTrader 5 terminals inside a single Docker container, e
 │               ├─ / → frontend/                              │
 │               └─ /api/* → proxied to engine:18810           │
 │                                                             │
-│  :18812-18912 ──► engine container (Debian + Wine + Xvfb)   │
+│  :18812-18912 ──► engine container (Debian + Wine + Xvnc)   │
 │                     ├─ supervisord                          │
-│                     │   ├─ Xvfb :99                         │
+│                     │   ├─ Xvnc :99                         │
 │                     │   └─ control-api :18810 (internal)    │
 │                     └─ per worker (managed by control-api)  │
 │                         ├─ terminal64.exe /portable         │
@@ -217,8 +217,8 @@ api/
   main.go             # HTTP server: SPA + /api/* reverse proxy
   go.mod
 engine/
-  Dockerfile          # Debian + wine64 + Xvfb + supervisord; bakes MT5 + Python at build time
-  supervisord.conf    # manages Xvfb and control-api
+  Dockerfile          # Debian + wine64 + Xvnc + supervisord; bakes MT5 + Python at build time
+  supervisord.conf    # manages Xvnc and control-api
   control_api/
     main.go           # HTTP handlers
     manager.go        # worker lifecycle (create / start / stop / delete)

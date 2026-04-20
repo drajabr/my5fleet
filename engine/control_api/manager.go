@@ -269,6 +269,46 @@ func killPID(pid int, label string) {
 
 // ── Filesystem helpers ─────────────────────────────────────────────────────────
 
+// copyDir recursively copies src directory tree into dst.
+func copyDir(src, dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
 func createFS(workerID string) error {
 	workerDir := filepath.Join(workersDir, workerID)
 	if _, err := os.Stat(workerDir); err == nil {
@@ -307,10 +347,18 @@ func createFS(workerID string) error {
 		}
 	}
 
-	// Create fresh writable directories
+	// Copy writable directories from reference (or create empty if not present yet)
+	// This propagates EAs, broker configs, profiles etc. to each new worker.
 	for _, d := range writableDirs {
-		if err := os.MkdirAll(filepath.Join(workerDir, d), 0o755); err != nil {
-			return err
+		srcDir := filepath.Join(referenceDir, d)
+		dstDir := filepath.Join(workerDir, d)
+		if _, err := os.Stat(srcDir); err == nil {
+			if err := copyDir(srcDir, dstDir); err != nil {
+				log.Printf("[createFS] Warning: failed to copy %s from reference: %v; using empty dir", d, err)
+				_ = os.MkdirAll(dstDir, 0o755)
+			}
+		} else {
+			_ = os.MkdirAll(dstDir, 0o755)
 		}
 	}
 
@@ -681,8 +729,8 @@ func StartTerminal(id string) (*Terminal, error) {
 	}
 	_ = exec.Command("xsetroot", "-display", workerDisplay, "-cursor_name", "left_ptr").Run()
 
-	// ── Lightweight window manager (twm) ───────────────────────────────────────
-	wmCmd := exec.Command("twm", "-display", workerDisplay)
+	// ── Window manager (bspwm) ──────────────────────────────────────────────────
+	wmCmd := exec.Command("bspwm", "-c", "/opt/mt5/scripts/bspwmrc")
 	wmCmd.Env = filteredEnv(
 		"DISPLAY="+workerDisplay,
 		"XDG_RUNTIME_DIR=/tmp",
@@ -690,11 +738,11 @@ func StartTerminal(id string) (*Terminal, error) {
 	wmCmd.Stdout = os.Stdout
 	wmCmd.Stderr = os.Stderr
 	if err := wmCmd.Start(); err != nil {
-		log.Printf("[start] Warning: twm failed for %s: %v", id, err)
+		log.Printf("[start] Warning: bspwm failed for %s: %v", id, err)
 	} else {
-		log.Printf("[start] twm PID %d for %s on display %s", wmCmd.Process.Pid, id, workerDisplay)
+		log.Printf("[start] bspwm PID %d for %s on display %s", wmCmd.Process.Pid, id, workerDisplay)
 		if err := waitForWMReady(wmCmd.Process.Pid, 3*time.Second); err != nil {
-			log.Printf("[start] Warning: twm readiness check for %s failed: %v", id, err)
+			log.Printf("[start] Warning: bspwm readiness check for %s failed: %v", id, err)
 		}
 	}
 
@@ -706,7 +754,7 @@ func StartTerminal(id string) (*Terminal, error) {
 	)
 
 	// ── MT5 terminal ───────────────────────────────────────────────────────────
-	// MT5 runs directly on the X display, managed by twm.
+	// MT5 runs directly on the X display, managed by bspwm.
 	tOut, _ := os.OpenFile(filepath.Join(logsDir, "terminal.stdout.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	tErr, _ := os.OpenFile(filepath.Join(logsDir, "terminal.stderr.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 

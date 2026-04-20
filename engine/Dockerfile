@@ -6,7 +6,7 @@ COPY control_api/*.go .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-w -s" -trimpath -o control-api .
 
-# ── Stage 2: Wine + Xvfb runtime (Debian + WineHQ stable) ────────────────────
+# ── Stage 2: Wine + Xvnc runtime (Debian + WineHQ stable) ────────────────────
 FROM debian:bookworm-slim
 
 # ── System packages + WineHQ stable ──────────────────────────────────────────
@@ -15,8 +15,8 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         wget gnupg2 ca-certificates \
-        xvfb x11-utils tigervnc-standalone-server \
-        supervisor procps unzip python3 python3-pip bash twm \
+        x11-utils tigervnc-standalone-server \
+        supervisor procps unzip python3 python3-pip bash bspwm \
         xfonts-base xfonts-75dpi \
     && mkdir -pm755 /etc/apt/keyrings \
     && wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
@@ -33,29 +33,23 @@ RUN mkdir -p \
         /my5fleet/workers \
         /my5fleet/reference \
         /my5fleet/config \
+        /my5fleet/wineprefix \
         /var/log/supervisor
-
-# ── Bake MT5 + Python + packages into the image at build time ─────────────────
-# Copy only the install script first so that changing other scripts later
-# does NOT bust this expensive cache layer (~10-15 min, ~1.5 GB result).
-COPY scripts/install_reference.sh /opt/mt5/scripts/install_reference.sh
-RUN chmod +x /opt/mt5/scripts/install_reference.sh \
-    && FLEET_DIR=/my5fleet \
-       WINEPREFIX=/my5fleet/wineprefix \
-       DISPLAY=:99 \
-       WINEDEBUG=-all \
-       /opt/mt5/scripts/install_reference.sh
 
 # ── Control API binary (from builder) ─────────────────────────────────────────
 RUN mkdir -p /opt/mt5/control_api
 COPY --from=go-builder /build/control-api /opt/mt5/control_api/server
 
-# ── Remaining scripts ─────────────────────────────────────────────────────────
+# ── Scripts (install_reference.sh runs at first boot, not build time) ─────────
 COPY scripts/ /opt/mt5/scripts/
-RUN chmod +x /opt/mt5/scripts/*.sh
+RUN chmod +x /opt/mt5/scripts/*.sh /opt/mt5/scripts/bspwmrc \
+    && sed -i 's/\r$//' /opt/mt5/scripts/*.sh /opt/mt5/scripts/bspwmrc \
+    && sed -i '1s/^\xEF\xBB\xBF//' /opt/mt5/scripts/*.sh /opt/mt5/scripts/bspwmrc
 
 # ── Supervisor configuration ──────────────────────────────────────────────────
 RUN mkdir -p /etc/supervisor
 COPY supervisord.conf /etc/supervisor/supervisord.conf
+RUN sed -i 's/\r$//' /etc/supervisor/supervisord.conf \
+    && sed -i '1s/^\xEF\xBB\xBF//' /etc/supervisor/supervisord.conf
 
 ENTRYPOINT ["/opt/mt5/scripts/entrypoint.sh"]

@@ -1,7 +1,7 @@
-services:
+﻿services:
 
   # ── engine ──────────────────────────────────────────────────────────────────
-  # Runs Wine + Xvfb + MT5 terminals + RPyC servers + internal control API.
+  # Runs Wine + Xvnc + MT5 terminals + RPyC servers + internal control API.
   # The control API (port 18810) is intentionally NOT published to the host.
   engine:
     image: ${ENGINE_IMAGE:-ghcr.io/drajabr/my5fleet-engine:latest}
@@ -13,8 +13,9 @@ services:
       DISPLAY: ":99"
       WINEDEBUG: "-all"
     volumes:
-      # Only workers/ and config/ need to persist — wineprefix + reference
-      # are baked into the image and live in the image layer (not on a volume).
+      # wineprefix/, reference/, workers/ and config/ must all persist across restarts.
+      - mt5-wineprefix:/my5fleet/wineprefix
+      - mt5-reference:/my5fleet/reference
       - mt5-workers:/my5fleet/workers
       - mt5-config:/my5fleet/config
     # Publish the RPyC worker port range so clients can connect directly.
@@ -34,6 +35,7 @@ services:
     restart: unless-stopped
     environment:
       ENGINE_URL: "http://engine:18810"
+      INSTALLER_VNC_URL: "http://engine:6799"
     ports:
       - "${WEB_PORT:-17380}:17380"
     networks:
@@ -51,6 +53,8 @@ services:
 #       o: bind
 #       device: /opt/my5fleet-data
 volumes:
+  mt5-wineprefix:
+  mt5-reference:
   mt5-workers:
   mt5-config:
 
