@@ -49,8 +49,6 @@ type Terminal struct {
 	PIDWM       int            `json:"pid_wm,omitempty"`
 	VNCWSPort   int            `json:"vnc_ws_port,omitempty"`
 	PIDXvnc     int            `json:"pid_xvnc,omitempty"`
-	PIDXvfb     int            `json:"pid_xvfb,omitempty"`
-	PIDx11vnc   int            `json:"pid_x11vnc,omitempty"`
 	PIDWsockify int            `json:"pid_wsockify,omitempty"`
 }
 
@@ -232,13 +230,11 @@ func cleanStaleState() {
 
 	changed := false
 	for _, w := range workers {
-		if deriveStatus(w) == StatusStopped && (w.PIDTerminal != 0 || w.PIDRPyC != 0) {
+		if deriveStatus(w) == StatusStopped && (w.PIDTerminal != 0 || w.PIDRPyC != 0 || w.PIDXvnc != 0 || w.PIDWM != 0 || w.PIDWsockify != 0) {
 			w.PIDTerminal = 0
 			w.PIDRPyC = 0
 			w.PIDWM = 0
 			w.PIDXvnc = 0
-			w.PIDXvfb = 0
-			w.PIDx11vnc = 0
 			w.PIDWsockify = 0
 			w.Status = StatusStopped
 			changed = true
@@ -438,10 +434,15 @@ func ListTerminals() ([]*Terminal, error) {
 		}
 
 		live := deriveStatus(w)
-		// Sync transient statuses once the processes settle
+		// Sync transient statuses once the processes settle.
+		// Exception: do NOT override StatusStarting with StatusStopped — Phase 2 of
+		// StartTerminal launches Xvnc/bspwm/MT5/RPyC outside the lock and hasn't
+		// saved the PIDs yet. Downgrading to stopped here causes the supervisor to
+		// re-log "Ensuring running" every tick while the start is still in flight.
 		if w.Status != live &&
 			(w.Status == StatusStarting || w.Status == StatusStopping ||
-				w.Status == StatusRunning || w.Status == StatusError) {
+				w.Status == StatusRunning || w.Status == StatusError) &&
+			!(w.Status == StatusStarting && live == StatusStopped) {
 			w.Status = live
 			changed = true
 		}
@@ -656,8 +657,6 @@ func StartTerminal(id string) (*Terminal, error) {
 	w.PIDRPyC = 0
 	w.PIDWM = 0
 	w.PIDXvnc = 0
-	w.PIDXvfb = 0
-	w.PIDx11vnc = 0
 	w.PIDWsockify = 0
 	w.Status = StatusStarting
 	w.LastError = ""
@@ -730,7 +729,11 @@ func StartTerminal(id string) (*Terminal, error) {
 	_ = exec.Command("xsetroot", "-display", workerDisplay, "-cursor_name", "left_ptr").Run()
 
 	// ── Window manager (bspwm) ──────────────────────────────────────────────────
-	wmCmd := exec.Command("bspwm", "-c", "/opt/mt5/scripts/bspwmrc")
+	// ── Window manager (autotilingwm) ───────────────────────────────────────────
+	// autotilingwm sets _NET_FRAME_EXTENTS=0,0,0,0 and _MOTIF_WM_HINTS before
+	// mapping each window. Wine checks _NET_FRAME_EXTENTS at MapWindow time;
+	// without this, Wine draws its own title bar despite Decorated=N.
+	wmCmd := exec.Command("autotilingwm", "-display", workerDisplay)
 	wmCmd.Env = filteredEnv(
 		"DISPLAY="+workerDisplay,
 		"XDG_RUNTIME_DIR=/tmp",
@@ -771,17 +774,18 @@ func StartTerminal(id string) (*Terminal, error) {
 	}
 
 	// ── Configure Wine X11 driver before MT5 launch ──────────────────────────
-	// Remove Wine decorations (title bar, borders) so bspwm manages the window completely.
+	// Managed=Y: Wine creates normal X11 windows; autotilingwm handles tiling.
+	// Decorated=N: Wine does NOT request WM decorations via _MOTIF_WM_HINTS.
+	// autotilingwm additionally sets _NET_FRAME_EXTENTS=0 before MapWindow,
+	// which is what actually prevents Wine from drawing its own title bar.
+	// NOTE: wineserver -w is intentionally omitted — all workers share one
+	// wineprefix/wineserver and -w would block until all Wine processes exit.
 	regCmd1 := exec.Command("wine", "reg", "add", "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver", "/v", "Managed", "/t", "REG_SZ", "/d", "Y", "/f")
 	regCmd1.Env = env
 	_ = regCmd1.Run()
 	regCmd2 := exec.Command("wine", "reg", "add", "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver", "/v", "Decorated", "/t", "REG_SZ", "/d", "N", "/f")
 	regCmd2.Env = env
 	_ = regCmd2.Run()
-	// Flush Wine server to apply registry changes
-	wineserverCmd := exec.Command("wineserver", "-w")
-	wineserverCmd.Env = env
-	_ = wineserverCmd.Run()
 
 	termCmd := exec.Command("wine", winMT5Path, "/portable")
 	termCmd.Dir = workerDir
@@ -914,6 +918,14 @@ func StartTerminal(id string) (*Terminal, error) {
 }
 
 func reconcileTerminals() {
+	// Workers must not run alongside the reference terminal. The supervisor
+	// idles completely while reference-mt5 is active; reference stop calls
+	// resumeAllWorkersAfterReference() which re-enables keep_alive so the
+	// next tick will start everything back up.
+	if supervisorProgramStatus("reference-mt5") == "RUNNING" {
+		return
+	}
+
 	workers, err := ListTerminals()
 	if err != nil {
 		log.Printf("[supervisor] list workers failed: %v", err)
@@ -1074,8 +1086,6 @@ func StopTerminal(id string) (*Terminal, error) {
 	w.PIDRPyC = 0
 	w.PIDWM = 0
 	w.PIDXvnc = 0
-	w.PIDXvfb = 0
-	w.PIDx11vnc = 0
 	w.PIDWsockify = 0
 	w.KeepAlive = boolPtr(false)
 	w.Status = StatusStopped

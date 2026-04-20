@@ -126,8 +126,8 @@ func main() {
 
 		if resp.StatusCode != http.StatusOK {
 			log.Printf("worker %s not found or error: %d", workerId, resp.StatusCode)
-			w.WriteHeader(resp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resp.StatusCode)
 			io.Copy(w, resp.Body) //nolint:errcheck
 			return
 		}
@@ -153,13 +153,11 @@ func main() {
 		}
 
 		// Compute the container-local websockify port.
-		// Formula: vncWSLocalBase + (worker.Port - basePort) where:
-		//   vncWSLocalBase = 6800 (engine/control_api/manager.go)
-		//   basePort = 18812 (engine/control_api/manager.go)
-		// Proxy directly to websockify on the engine container.
+		// Formula: vncWSLocalBase + (worker.Port - workerPortBase)
+		// workerPortBase must match WORKER_PORT_RANGE_START used by the engine.
 		const vncWSLocalBase = 6800
-		const basePort = 18812
-		localWSPort := vncWSLocalBase + (workerInfo.Port - basePort)
+		workerPortBase := envOrInt("WORKER_PORT_RANGE_START", 18812)
+		localWSPort := vncWSLocalBase + (workerInfo.Port - workerPortBase)
 		workerVNCURL := &url.URL{Scheme: "http", Host: fmt.Sprintf("engine:%d", localWSPort)}
 		workerVNCProxy := buildProxy(workerVNCURL)
 		r.URL.Path = "/"
@@ -270,6 +268,16 @@ func spaFileServer(root string) http.Handler {
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envOrInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

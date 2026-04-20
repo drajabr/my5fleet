@@ -6,6 +6,15 @@ COPY control_api/*.go .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-w -s" -trimpath -o control-api .
 
+# ── Stage 1b: build autotilingwm ─────────────────────────────────────────────
+FROM debian:bookworm-slim AS tilewm-builder
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential libx11-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY tilewm/ /build/tilewm/
+WORKDIR /build/tilewm
+RUN make
+
 # ── Stage 2: Wine + Xvnc runtime (Debian + WineHQ stable) ────────────────────
 FROM debian:bookworm-slim
 
@@ -17,7 +26,7 @@ RUN apt-get update \
         wget gnupg2 ca-certificates \
         x11-utils tigervnc-standalone-server \
         supervisor procps unzip python3 python3-pip bash bspwm \
-        xfonts-base xfonts-75dpi \
+            xfonts-base xfonts-75dpi libx11-6 \
     && mkdir -pm755 /etc/apt/keyrings \
     && wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
     && wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/bookworm/winehq-bookworm.sources \
@@ -39,6 +48,7 @@ RUN mkdir -p \
 # ── Control API binary (from builder) ─────────────────────────────────────────
 RUN mkdir -p /opt/mt5/control_api
 COPY --from=go-builder /build/control-api /opt/mt5/control_api/server
+COPY --from=tilewm-builder /build/tilewm/autotilingwm /usr/local/bin/autotilingwm
 
 # ── Scripts (install_reference.sh runs at first boot, not build time) ─────────
 COPY scripts/ /opt/mt5/scripts/

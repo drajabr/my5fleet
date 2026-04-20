@@ -381,6 +381,13 @@ static int should_manage(Window w) {
 
 static void manage_window(Window w, int map_if_needed) {
     if (!should_manage(w)) {
+        // Non-tiled windows (dialogs, transient popups): still suppress Wine
+        // decorations by setting _NET_FRAME_EXTENTS=0 before mapping.
+        // Wine checks this at MapWindow time; without it, Wine draws its own
+        // title bar even with Decorated=N in the registry.
+        long extents[4] = {0, 0, 0, 0};
+        XChangeProperty(dpy, w, atom_net_frame_extents, XA_CARDINAL, 32,
+                        PropModeReplace, (unsigned char *)extents, 4);
         if (map_if_needed) {
             XMapWindow(dpy, w);
         }

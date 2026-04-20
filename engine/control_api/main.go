@@ -146,12 +146,34 @@ func supervisorAction(action, program string) (string, error) {
 	return text, nil
 }
 
+// stopAllWorkersForReference stops every running/starting worker and clears
+// keep_alive so the supervisor does not restart them while reference is active.
+// Workers regain keep_alive (and thus auto-restart) when reference stops.
+func stopAllWorkersForReference() {
+	workers, err := ListTerminals()
+	if err != nil {
+		log.Printf("[reference] list workers failed: %v", err)
+		return
+	}
+	for _, w := range workers {
+		if w.Status == StatusRunning || w.Status == StatusStarting || w.Status == StatusError {
+			log.Printf("[reference] stopping worker %s before reference start", w.ID)
+			if _, err := StopTerminal(w.ID); err != nil {
+				log.Printf("[reference] stop worker %s failed: %v", w.ID, err)
+			}
+		}
+	}
+}
+
 func handleReferenceStart(w http.ResponseWriter, _ *http.Request) {
 	referenceBinary := filepath.Join(referenceDir, "terminal64.exe")
 	if _, err := os.Stat(referenceBinary); err != nil {
 		writeError(w, http.StatusConflict, "reference terminal is not installed yet")
 		return
 	}
+
+	// Stop all workers first — they cannot run alongside the reference terminal.
+	stopAllWorkersForReference()
 
 	out, err := supervisorAction("start", "reference-mt5")
 	if err != nil && !strings.Contains(strings.ToLower(out), "already started") {
@@ -172,7 +194,33 @@ func handleReferenceStop(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	// Re-enable keep_alive on all workers so the supervisor restarts them.
+	resumeAllWorkersAfterReference()
+
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopped"})
+}
+
+// resumeAllWorkersAfterReference re-enables keep_alive on every worker that
+// was stopped for reference mode. The supervisor loop will then restart them.
+func resumeAllWorkersAfterReference() {
+	mu.Lock()
+	defer mu.Unlock()
+	workers, err := load()
+	if err != nil {
+		log.Printf("[reference] resume workers load failed: %v", err)
+		return
+	}
+	changed := false
+	for _, w := range workers {
+		if w.KeepAlive != nil && !*w.KeepAlive {
+			w.KeepAlive = boolPtr(true)
+			changed = true
+			log.Printf("[reference] re-enabled keep_alive for worker %s", w.ID)
+		}
+	}
+	if changed {
+		_ = save(workers)
+	}
 }
 
 func handleReferenceRebuild(w http.ResponseWriter, _ *http.Request) {
