@@ -37,6 +37,7 @@ if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
     exit 1
 fi
 echo "[install] Display ready."
+
 # -- 1. Initialise Wine prefix --------------------------------------------------------
 mkdir -p "$WINEPREFIX"
 echo "[install] Initialising Wine prefix at $WINEPREFIX ..."
@@ -51,9 +52,9 @@ wine reg add "HKEY_CURRENT_USER\\Software\\Wine" /v Version /t REG_SZ /d "win10"
 wineserver -w 2>/dev/null || true
 
 # -- 1c. Let WM manage Wine windows ------------------------------------------
-echo "[install] Configuring Wine X11 driver (Managed=Y, no decorations) ..."
+echo "[install] Configuring Wine X11 driver (Managed=Y, WM decorations enabled) ..."
 wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" /v Managed /t REG_SZ /d "Y" /f 2>/dev/null || true
-wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" /v Decorated /t REG_SZ /d "N" /f 2>/dev/null || true
+wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" /v Decorated /t REG_SZ /d "Y" /f 2>/dev/null || true
 wineserver -w 2>/dev/null || true
 
 # -- 2. Install MetaTrader 5 --------------------------------------------------

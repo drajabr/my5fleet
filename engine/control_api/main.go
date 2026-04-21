@@ -149,12 +149,35 @@ func supervisorAction(action, program string) (string, error) {
 // stopAllWorkersForReference stops every running/starting worker and clears
 // keep_alive so the supervisor does not restart them while reference is active.
 // Workers regain keep_alive (and thus auto-restart) when reference stops.
-func stopAllWorkersForReference() {
+func stopAllWorkersForReference(timeout time.Duration) error {
+	// First disable keep_alive for all workers so no supervisor cycle can restart
+	// them while reference mode is being activated.
+	mu.Lock()
+	workersMap, err := load()
+	if err != nil {
+		mu.Unlock()
+		return fmt.Errorf("load workers failed: %w", err)
+	}
+	changed := false
+	for _, ww := range workersMap {
+		if ww.KeepAlive == nil || *ww.KeepAlive {
+			ww.KeepAlive = boolPtr(false)
+			changed = true
+		}
+	}
+	if changed {
+		if err := save(workersMap); err != nil {
+			mu.Unlock()
+			return fmt.Errorf("save workers failed: %w", err)
+		}
+	}
+	mu.Unlock()
+
 	workers, err := ListTerminals()
 	if err != nil {
-		log.Printf("[reference] list workers failed: %v", err)
-		return
+		return fmt.Errorf("list workers failed: %w", err)
 	}
+
 	for _, w := range workers {
 		if w.Status == StatusRunning || w.Status == StatusStarting || w.Status == StatusError {
 			log.Printf("[reference] stopping worker %s before reference start", w.ID)
@@ -163,6 +186,40 @@ func stopAllWorkersForReference() {
 			}
 		}
 	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		remaining := make([]string, 0)
+		latest, err := ListTerminals()
+		if err != nil {
+			return fmt.Errorf("list workers during drain failed: %w", err)
+		}
+		for _, w := range latest {
+			if w.Status == StatusRunning || w.Status == StatusStarting || w.Status == StatusStopping || w.Status == StatusError {
+				remaining = append(remaining, w.ID+"("+string(w.Status)+")")
+			}
+		}
+		if len(remaining) == 0 {
+			return nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	latest, err := ListTerminals()
+	if err != nil {
+		return fmt.Errorf("list workers after drain timeout failed: %w", err)
+	}
+	remaining := make([]string, 0)
+	for _, w := range latest {
+		if w.Status == StatusRunning || w.Status == StatusStarting || w.Status == StatusStopping || w.Status == StatusError {
+			remaining = append(remaining, w.ID+"("+string(w.Status)+")")
+		}
+	}
+	if len(remaining) > 0 {
+		return fmt.Errorf("workers not fully stopped before reference start: %s", strings.Join(remaining, ", "))
+	}
+
+	return nil
 }
 
 func handleReferenceStart(w http.ResponseWriter, _ *http.Request) {
@@ -173,7 +230,10 @@ func handleReferenceStart(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	// Stop all workers first — they cannot run alongside the reference terminal.
-	stopAllWorkersForReference()
+	if err := stopAllWorkersForReference(30 * time.Second); err != nil {
+		writeError(w, http.StatusConflict, "failed to stop workers before reference start: "+err.Error())
+		return
+	}
 
 	out, err := supervisorAction("start", "reference-mt5")
 	if err != nil && !strings.Contains(strings.ToLower(out), "already started") {

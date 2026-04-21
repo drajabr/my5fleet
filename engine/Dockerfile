@@ -6,15 +6,6 @@ COPY control_api/*.go .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-w -s" -trimpath -o control-api .
 
-# ── Stage 1b: build autotilingwm ─────────────────────────────────────────────
-FROM debian:bookworm-slim AS tilewm-builder
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential libx11-dev \
-    && rm -rf /var/lib/apt/lists/*
-COPY tilewm/ /build/tilewm/
-WORKDIR /build/tilewm
-RUN make
-
 # ── Stage 2: Wine + Xvnc runtime (Debian + WineHQ stable) ────────────────────
 FROM debian:bookworm-slim
 
@@ -25,7 +16,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         wget gnupg2 ca-certificates \
         x11-utils tigervnc-standalone-server \
-        supervisor procps unzip python3 python3-pip bash bspwm \
+        supervisor procps unzip python3 python3-pip bash awesome \
             xfonts-base xfonts-75dpi libx11-6 \
     && mkdir -pm755 /etc/apt/keyrings \
     && wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
@@ -48,13 +39,12 @@ RUN mkdir -p \
 # ── Control API binary (from builder) ─────────────────────────────────────────
 RUN mkdir -p /opt/mt5/control_api
 COPY --from=go-builder /build/control-api /opt/mt5/control_api/server
-COPY --from=tilewm-builder /build/tilewm/autotilingwm /usr/local/bin/autotilingwm
 
 # ── Scripts (install_reference.sh runs at first boot, not build time) ─────────
 COPY scripts/ /opt/mt5/scripts/
-RUN chmod +x /opt/mt5/scripts/*.sh /opt/mt5/scripts/bspwmrc \
-    && sed -i 's/\r$//' /opt/mt5/scripts/*.sh /opt/mt5/scripts/bspwmrc \
-    && sed -i '1s/^\xEF\xBB\xBF//' /opt/mt5/scripts/*.sh /opt/mt5/scripts/bspwmrc
+RUN chmod +x /opt/mt5/scripts/*.sh \
+    && sed -i 's/\r$//' /opt/mt5/scripts/*.sh /opt/mt5/scripts/awesome.rc.lua \
+    && sed -i '1s/^\xEF\xBB\xBF//' /opt/mt5/scripts/*.sh /opt/mt5/scripts/awesome.rc.lua
 
 # ── Supervisor configuration ──────────────────────────────────────────────────
 RUN mkdir -p /etc/supervisor

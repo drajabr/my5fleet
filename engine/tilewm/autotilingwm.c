@@ -523,6 +523,10 @@ int main(int argc, char **argv) {
     }
 
     XSelectInput(dpy, root, SubstructureRedirectMask | SubstructureNotifyMask | StructureNotifyMask);
+    // Force server-side processing now so BadAccess is raised before we publish
+    // _NET_SUPPORTING_WM_CHECK. This avoids stale "autotilingWM" markers when
+    // another WM already owns the display.
+    XSync(dpy, False);
 
     setup_wm_check();
     scan_existing_windows();

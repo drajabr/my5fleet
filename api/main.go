@@ -21,6 +21,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"time"
 )
 
 const apiLogMax = 500
@@ -113,34 +114,18 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		// Query the engine to get the worker's port and websockify port.
-		resp, err := http.Get(engineURL + "/workers/" + url.QueryEscape(workerId))
+		workerInfo, statusCode, detail, err := lookupWorkerVNCInfo(engineURL, workerId)
 		if err != nil {
-			log.Printf("worker lookup failed for %s: %v", workerId, err)
+			// 404/503 are common while a worker is being created; avoid noisy error logs.
+			if statusCode != http.StatusNotFound && statusCode != http.StatusServiceUnavailable {
+				log.Printf("worker lookup failed for %s: %v", workerId, err)
+			}
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadGateway)
-			_ = json.NewEncoder(w).Encode(map[string]string{"detail": "worker lookup failed: " + err.Error()})
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			log.Printf("worker %s not found or error: %d", workerId, resp.StatusCode)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body) //nolint:errcheck
-			return
-		}
-
-		var workerInfo struct {
-			Port      int `json:"port"`
-			VNCWSPort int `json:"vnc_ws_port"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&workerInfo); err != nil {
-			log.Printf("failed to parse worker info: %v", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"detail": "failed to parse worker info"})
+			if statusCode == 0 {
+				statusCode = http.StatusBadGateway
+			}
+			w.WriteHeader(statusCode)
+			_ = json.NewEncoder(w).Encode(map[string]string{"detail": detail})
 			return
 		}
 
@@ -210,6 +195,65 @@ func getEngineLogs(engineURL string) []string {
 		return []string{"failed to decode engine logs: " + err.Error()}
 	}
 	return lines
+}
+
+func lookupWorkerVNCInfo(engineURL, workerID string) (struct {
+	Port      int `json:"port"`
+	VNCWSPort int `json:"vnc_ws_port"`
+}, int, string, error) {
+	var workerInfo struct {
+		Port      int `json:"port"`
+		VNCWSPort int `json:"vnc_ws_port"`
+	}
+
+	lookupURL := engineURL + "/workers/" + url.QueryEscape(workerID)
+	deadline := time.Now().Add(3 * time.Second)
+	lastStatus := 0
+	lastDetail := "worker lookup failed"
+
+	for {
+		resp, err := http.Get(lookupURL)
+		if err != nil {
+			lastStatus = http.StatusBadGateway
+			lastDetail = "worker lookup failed: " + err.Error()
+			if time.Now().After(deadline) {
+				return workerInfo, lastStatus, lastDetail, err
+			}
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			lastStatus = resp.StatusCode
+			if len(body) > 0 {
+				lastDetail = strings.TrimSpace(string(body))
+			} else {
+				lastDetail = fmt.Sprintf("worker lookup failed with status %d", resp.StatusCode)
+			}
+
+			if (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusServiceUnavailable) && time.Now().Before(deadline) {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			return workerInfo, lastStatus, lastDetail, fmt.Errorf("lookup status %d", resp.StatusCode)
+		}
+
+		err = json.NewDecoder(resp.Body).Decode(&workerInfo)
+		_ = resp.Body.Close()
+		if err != nil {
+			lastStatus = http.StatusInternalServerError
+			lastDetail = "failed to parse worker info"
+			if time.Now().After(deadline) {
+				return workerInfo, lastStatus, lastDetail, err
+			}
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+
+		return workerInfo, 0, "", nil
+	}
 }
 
 // buildProxy creates a reverse proxy that rewrites requests to the upstream host.

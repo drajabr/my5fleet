@@ -728,25 +728,41 @@ func StartTerminal(id string) (*Terminal, error) {
 	}
 	_ = exec.Command("xsetroot", "-display", workerDisplay, "-cursor_name", "left_ptr").Run()
 
-	// ── Window manager (bspwm) ──────────────────────────────────────────────────
-	// ── Window manager (autotilingwm) ───────────────────────────────────────────
-	// autotilingwm sets _NET_FRAME_EXTENTS=0,0,0,0 and _MOTIF_WM_HINTS before
-	// mapping each window. Wine checks _NET_FRAME_EXTENTS at MapWindow time;
-	// without this, Wine draws its own title bar despite Decorated=N.
-	wmCmd := exec.Command("autotilingwm", "-display", workerDisplay)
+	// ── websockify (WebSocket → VNC proxy) ────────────────────────────────────
+	// Start this immediately after Xvnc so noVNC can connect to a blank display
+	// while the WM and MT5 are still coming up.
+	wsCmd := exec.Command("websockify",
+		fmt.Sprintf("0.0.0.0:%d", wsContainerPort),
+		fmt.Sprintf("localhost:%d", vncInternalPort),
+	)
+	wsCmd.Stdout = os.Stdout
+	wsCmd.Stderr = os.Stderr
+	if err := wsCmd.Start(); err != nil {
+		log.Printf("[start] Warning: websockify failed for %s: %v", id, err)
+	} else {
+		log.Printf("[start] websockify PID %d for %s on port %d", wsCmd.Process.Pid, id, wsContainerPort)
+	}
+
+	// ── Window manager (AwesomeWM) ─────────────────────────────────────────────
+	wmCmd := exec.Command("awesome", "-c", "/opt/mt5/scripts/awesome.rc.lua")
 	wmCmd.Env = filteredEnv(
 		"DISPLAY="+workerDisplay,
 		"XDG_RUNTIME_DIR=/tmp",
+		"HOME=/root",
 	)
 	wmCmd.Stdout = os.Stdout
 	wmCmd.Stderr = os.Stderr
 	if err := wmCmd.Start(); err != nil {
-		log.Printf("[start] Warning: bspwm failed for %s: %v", id, err)
-	} else {
-		log.Printf("[start] bspwm PID %d for %s on display %s", wmCmd.Process.Pid, id, workerDisplay)
-		if err := waitForWMReady(wmCmd.Process.Pid, 3*time.Second); err != nil {
-			log.Printf("[start] Warning: bspwm readiness check for %s failed: %v", id, err)
-		}
+		killPID(xvncCmd.Process.Pid, "xvnc")
+		setError(fmt.Sprintf("failed to start window manager: %v", err))
+		return nil, fmt.Errorf("failed to start window manager for %s: %w", id, err)
+	}
+	log.Printf("[start] awesome PID %d for %s on display %s", wmCmd.Process.Pid, id, workerDisplay)
+	if err := waitForWMReady(wmCmd.Process.Pid, 3*time.Second); err != nil {
+		killPID(wmCmd.Process.Pid, "wm")
+		killPID(xvncCmd.Process.Pid, "xvnc")
+		setError(fmt.Sprintf("window manager readiness failed: %v", err))
+		return nil, fmt.Errorf("window manager did not become ready for %s: %w", id, err)
 	}
 
 	// ── Per-worker wine environment ────────────────────────────────────────────
@@ -762,10 +778,8 @@ func StartTerminal(id string) (*Terminal, error) {
 	tErr, _ := os.OpenFile(filepath.Join(logsDir, "terminal.stderr.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 
 	if _, err := os.Stat(workerDir); err != nil {
+		killPID(wmCmd.Process.Pid, "wm")
 		killPID(xvncCmd.Process.Pid, "xvnc")
-		if wmCmd.Process != nil {
-			killPID(wmCmd.Process.Pid, "wm")
-		}
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("worker %s deleted during start", id)
 		}
@@ -774,16 +788,14 @@ func StartTerminal(id string) (*Terminal, error) {
 	}
 
 	// ── Configure Wine X11 driver before MT5 launch ──────────────────────────
-	// Managed=Y: Wine creates normal X11 windows; autotilingwm handles tiling.
-	// Decorated=N: Wine does NOT request WM decorations via _MOTIF_WM_HINTS.
-	// autotilingwm additionally sets _NET_FRAME_EXTENTS=0 before MapWindow,
-	// which is what actually prevents Wine from drawing its own title bar.
+	// Managed=Y: Wine creates normal X11 windows under standard X11 window management.
+	// Decorated=Y: allow the WM to provide standard title bars and window chrome.
 	// NOTE: wineserver -w is intentionally omitted — all workers share one
 	// wineprefix/wineserver and -w would block until all Wine processes exit.
 	regCmd1 := exec.Command("wine", "reg", "add", "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver", "/v", "Managed", "/t", "REG_SZ", "/d", "Y", "/f")
 	regCmd1.Env = env
 	_ = regCmd1.Run()
-	regCmd2 := exec.Command("wine", "reg", "add", "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver", "/v", "Decorated", "/t", "REG_SZ", "/d", "N", "/f")
+	regCmd2 := exec.Command("wine", "reg", "add", "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver", "/v", "Decorated", "/t", "REG_SZ", "/d", "Y", "/f")
 	regCmd2.Env = env
 	_ = regCmd2.Run()
 
@@ -793,10 +805,8 @@ func StartTerminal(id string) (*Terminal, error) {
 	termCmd.Stdout = tOut
 	termCmd.Stderr = tErr
 	if err := termCmd.Start(); err != nil {
+		killPID(wmCmd.Process.Pid, "wm")
 		killPID(xvncCmd.Process.Pid, "xvnc")
-		if wmCmd.Process != nil {
-			killPID(wmCmd.Process.Pid, "wm")
-		}
 		setError(fmt.Sprintf("failed to start MT5 terminal: %v", err))
 		return nil, fmt.Errorf("failed to start terminal: %w", err)
 	}
@@ -847,10 +857,8 @@ func StartTerminal(id string) (*Terminal, error) {
 		_ = termCmd.Process.Kill()
 		_ = rPipeW.Close()
 		_ = ePipeW.Close()
+		killPID(wmCmd.Process.Pid, "wm")
 		killPID(xvncCmd.Process.Pid, "xvnc")
-		if wmCmd.Process != nil {
-			killPID(wmCmd.Process.Pid, "wm")
-		}
 		setError(fmt.Sprintf("failed to start RPyC server: %v", err))
 		return nil, fmt.Errorf("failed to start RPyC server: %w", err)
 	}
@@ -858,19 +866,6 @@ func StartTerminal(id string) (*Terminal, error) {
 	_ = rPipeW.Close()
 	_ = ePipeW.Close()
 	log.Printf("[start] RPyC server PID %d for %s on port %d", rpycCmd.Process.Pid, id, port)
-
-	// ── websockify (WebSocket → VNC proxy) ────────────────────────────────────
-	wsCmd := exec.Command("websockify",
-		fmt.Sprintf("0.0.0.0:%d", wsContainerPort),
-		fmt.Sprintf("localhost:%d", vncInternalPort),
-	)
-	wsCmd.Stdout = os.Stdout
-	wsCmd.Stderr = os.Stderr
-	if err := wsCmd.Start(); err != nil {
-		log.Printf("[start] Warning: websockify failed for %s: %v", id, err)
-	} else {
-		log.Printf("[start] websockify PID %d for %s on port %d", wsCmd.Process.Pid, id, wsContainerPort)
-	}
 
 	// ── Phase 3: record PIDs under lock ────────────────────────────────────────
 	mu.Lock()
@@ -887,9 +882,7 @@ func StartTerminal(id string) (*Terminal, error) {
 		if wsCmd.Process != nil {
 			killPID(wsCmd.Process.Pid, "websockify")
 		}
-		if wmCmd.Process != nil {
-			killPID(wmCmd.Process.Pid, "wm")
-		}
+		killPID(wmCmd.Process.Pid, "wm")
 		killPID(xvncCmd.Process.Pid, "xvnc")
 		return nil, fmt.Errorf("worker %s deleted during start", id)
 	}
@@ -1105,6 +1098,23 @@ func stopProcs(w *Terminal) {
 	killPID(w.PIDWsockify, "websockify")
 	killPID(w.PIDWM, "wm")
 	killPID(w.PIDXvnc, "xvnc")
+
+	// ── Clean up X display session files after killing Xvnc ──────────────────
+	// Xvnc may not immediately release its lock/socket files even after SIGKILL.
+	// Give it a brief window to clean up, then remove stale files explicitly.
+	time.Sleep(200 * time.Millisecond)
+
+	portOffset := w.Port - basePort
+	displayNum := vncDisplayBase + portOffset
+	lockFile := fmt.Sprintf("/tmp/.X%d-lock", displayNum)
+	unixSock := fmt.Sprintf("/tmp/.X11-unix/X%d", displayNum)
+
+	if err := os.Remove(lockFile); err == nil {
+		log.Printf("[stop] Cleaned up lock file: %s", lockFile)
+	}
+	if err := os.Remove(unixSock); err == nil {
+		log.Printf("[stop] Cleaned up socket: %s", unixSock)
+	}
 }
 
 func waitForXvncReady(displayNum, rfbPort int, timeout time.Duration) error {

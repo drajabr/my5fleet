@@ -18,12 +18,11 @@ while [ -f "$LOCK_FILE" ]; do
     sleep 2
 done
 
-# Ensure Wine X11 driver settings are correct before each startup
-# This removes decorations (title bar, borders) and lets bspwm manage the window
+# Ensure Wine X11 driver settings are correct before each startup.
+# Managed=Y keeps Wine windows under the X11 WM. Decorated=Y lets the WM draw title bars.
 echo "[reference-mt5] Applying Wine X11 driver configuration..."
 wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" /v Managed /t REG_SZ /d "Y" /f 2>/dev/null || true
-wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" /v Decorated /t REG_SZ /d "N" /f 2>/dev/null || true
-wineserver -w 2>/dev/null || true
+wine reg add "HKEY_CURRENT_USER\\Software\\Wine\\X11 Driver" /v Decorated /t REG_SZ /d "Y" /f 2>/dev/null || true
 
 echo "[reference-mt5] Starting MT5 on reference display..."
 exec wine "$MT5_EXE" /portable
