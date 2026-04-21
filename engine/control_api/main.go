@@ -146,6 +146,17 @@ func supervisorAction(action, program string) (string, error) {
 	return text, nil
 }
 
+func isReferenceActiveStatus(status string) bool {
+	status = strings.ToUpper(strings.TrimSpace(status))
+	// Treat unknown/transient states as active to fail closed.
+	switch status {
+	case "STOPPED", "EXITED", "FATAL":
+		return false
+	default:
+		return true
+	}
+}
+
 // stopAllWorkersForReference stops every running/starting worker and clears
 // keep_alive so the supervisor does not restart them while reference is active.
 // Workers regain keep_alive (and thus auto-restart) when reference stops.
@@ -263,6 +274,7 @@ func handleReferenceStop(w http.ResponseWriter, _ *http.Request) {
 
 	// Re-enable keep_alive on all workers so the supervisor restarts them.
 	resumeAllWorkersAfterReference()
+	triggerBulkWorkerStartAfterReferenceStop()
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopped"})
 }
@@ -288,6 +300,53 @@ func resumeAllWorkersAfterReference() {
 	if changed {
 		_ = save(workers)
 	}
+}
+
+// triggerBulkWorkerStartAfterReferenceStop kicks off worker starts immediately
+// after reference mode is turned off, instead of waiting for the next supervisor
+// ticker cycle. Starts are dispatched in parallel for faster recovery.
+func triggerBulkWorkerStartAfterReferenceStop() {
+	go func() {
+		deadline := time.Now().Add(8 * time.Second)
+		ready := false
+		for time.Now().Before(deadline) {
+			status := supervisorProgramStatus("reference-mt5")
+			if !isReferenceActiveStatus(status) {
+				ready = true
+				break
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+
+		if !ready {
+			log.Printf("[reference] bulk start skipped: reference-mt5 still active")
+			return
+		}
+
+		workers, err := ListTerminals()
+		if err != nil {
+			log.Printf("[reference] bulk start list workers failed: %v", err)
+			return
+		}
+
+		var wg sync.WaitGroup
+		for _, w := range workers {
+			if !shouldSupervisorStart(w) {
+				continue
+			}
+
+			wid := w.ID
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				log.Printf("[reference] bulk-start worker %s", wid)
+				if _, err := StartTerminal(wid); err != nil {
+					log.Printf("[reference] bulk-start worker %s failed: %v", wid, err)
+				}
+			}()
+		}
+		wg.Wait()
+	}()
 }
 
 func handleReferenceRebuild(w http.ResponseWriter, _ *http.Request) {

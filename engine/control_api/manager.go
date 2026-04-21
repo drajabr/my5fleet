@@ -924,7 +924,7 @@ func reconcileTerminals() {
 	// idles completely while reference-mt5 is active; reference stop calls
 	// resumeAllWorkersAfterReference() which re-enables keep_alive so the
 	// next tick will start everything back up.
-	if supervisorProgramStatus("reference-mt5") == "RUNNING" {
+	if isReferenceActiveStatus(supervisorProgramStatus("reference-mt5")) {
 		return
 	}
 
