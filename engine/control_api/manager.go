@@ -246,21 +246,30 @@ func cleanStaleState() {
 	}
 }
 
-// killPID sends SIGTERM, waits up to 8 s, then sends SIGKILL.
+// killPID sends SIGTERM, waits briefly, then escalates quickly to SIGKILL.
+// Fast restart/stop is preferred over long graceful waits for this workload.
 func killPID(pid int, label string) {
 	if !pidAlive(pid) {
 		return
 	}
 	log.Printf("[%s] SIGTERM → PID %d", label, pid)
 	_ = terminateProcess(pid)
-	for i := 0; i < 8; i++ {
-		time.Sleep(time.Second)
+	for i := 0; i < 4; i++ {
+		time.Sleep(100 * time.Millisecond)
 		if !pidAlive(pid) {
 			return
 		}
 	}
 	log.Printf("[%s] SIGKILL → PID %d", label, pid)
 	_ = forceKillProcess(pid)
+
+	// Give the kernel a brief moment to reap the process after SIGKILL.
+	for i := 0; i < 5; i++ {
+		if !pidAlive(pid) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // ── Filesystem helpers ─────────────────────────────────────────────────────────

@@ -178,14 +178,21 @@ func stopAllWorkersForReference(timeout time.Duration) error {
 		return fmt.Errorf("list workers failed: %w", err)
 	}
 
+	var wg sync.WaitGroup
 	for _, w := range workers {
 		if w.Status == StatusRunning || w.Status == StatusStarting || w.Status == StatusError {
-			log.Printf("[reference] stopping worker %s before reference start", w.ID)
-			if _, err := StopTerminal(w.ID); err != nil {
-				log.Printf("[reference] stop worker %s failed: %v", w.ID, err)
-			}
+			wid := w.ID
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				log.Printf("[reference] stopping worker %s before reference start", wid)
+				if _, err := StopTerminal(wid); err != nil {
+					log.Printf("[reference] stop worker %s failed: %v", wid, err)
+				}
+			}()
 		}
 	}
+	wg.Wait()
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -202,7 +209,7 @@ func stopAllWorkersForReference(timeout time.Duration) error {
 		if len(remaining) == 0 {
 			return nil
 		}
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 	}
 
 	latest, err := ListTerminals()
@@ -230,7 +237,7 @@ func handleReferenceStart(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	// Stop all workers first — they cannot run alongside the reference terminal.
-	if err := stopAllWorkersForReference(30 * time.Second); err != nil {
+	if err := stopAllWorkersForReference(8 * time.Second); err != nil {
 		writeError(w, http.StatusConflict, "failed to stop workers before reference start: "+err.Error())
 		return
 	}
